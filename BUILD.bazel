@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+_CARGO_DEPS = ["@crate_index//:thrift"]
+
+rust_library(
+    name = "lib",
+    srcs = glob(["src/*.rs"]),
+    visibility = ["//visibility:public"],
+    deps = select({
+        "@alphaguard_bazel_rules//tools/platform:windows": _CARGO_DEPS + ["@crate_index//:miow"],
+        "//conditions:default": _CARGO_DEPS,
+    }),
+)
+
+rust_test(
+    name = "tests",
+    crate = ":lib",
+)
