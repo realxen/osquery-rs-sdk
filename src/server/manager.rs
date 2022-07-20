@@ -199,7 +199,7 @@ impl ExtensionManagerServer {
                     std::thread::sleep(ping_interval);
                     if let Err(e) = client.ping() {
                         let msg = Error::from(e).message("extension ping failed");
-                        tx.send(Some(msg)).unwrap();
+                        tx.send(Some(msg)).ok();
                         break;
                     }
                 },

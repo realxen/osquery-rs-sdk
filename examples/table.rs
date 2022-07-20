@@ -21,7 +21,7 @@ fn example_extension() -> Result<()> {
 
 fn main() -> Result<()> {
     // start server
-    std::thread::spawn(example_extension);
+    let handle = std::thread::spawn(example_extension);
     std::thread::sleep(Duration::from_secs(2));
 
     // create a simple client interface
@@ -33,6 +33,9 @@ fn main() -> Result<()> {
     println!("### Example: SELECT * from example_table ###");
     let mut query = String::from("");
     while stdin().read_line(&mut query).is_ok() {
+        if handle.is_finished() {
+            break;
+        }
         if let Some('\n') | Some('\r') = query.chars().next_back() {
             if query.len() > 1 {
                 println!(
@@ -43,7 +46,8 @@ fn main() -> Result<()> {
             query.clear();
         }
     }
-    Ok(())
+
+    handle.join().unwrap()
 }
 
 fn example_columns() -> Vec<ColumnDefinition> {
