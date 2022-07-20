@@ -1,0 +1,67 @@
+use crate::{osquery, server::*};
+use std::sync::Arc;
+
+pub const STATUS_CODE: i32 = 9999;
+
+pub struct MockPlugin {
+    name: Arc<String>,
+    rname: RegistryName,
+}
+
+impl MockPlugin {
+    pub fn new(name: &str, rname: RegistryName) -> Box<Self> {
+        Box::new(Self {
+            name: Arc::from(name.to_string()),
+            rname,
+        })
+    }
+}
+
+impl OsqueryPlugin for MockPlugin {
+    fn name(&self) -> Arc<String> {
+        Arc::clone(&self.name)
+    }
+
+    fn registry_name(&self) -> &RegistryName {
+        &self.rname
+    }
+
+    fn routes(&mut self) -> osquery::ExtensionPluginResponse {
+        osquery::ExtensionPluginResponse::new()
+    }
+
+    fn ping(&mut self) -> osquery::ExtensionStatus {
+        todo!()
+    }
+
+    fn call(&mut self, _req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
+        osquery::ExtensionResponse::new(osquery::ExtensionStatus::new(STATUS_CODE, None, None), None)
+    }
+
+    fn shutdown(&self) {
+        todo!()
+    }
+}
+
+/// MockExtensionServerHandler impl the ExtensionSyncHandler interface to mock a server hanlder
+#[allow(dead_code)]
+pub struct MockExtensionServerHandler {}
+
+impl osquery::ExtensionSyncHandler for MockExtensionServerHandler {
+    fn handle_ping(&self) -> thrift::Result<osquery::ExtensionStatus> {
+        Ok(osquery::ExtensionStatus::new(0, "OK".to_string(), None))
+    }
+
+    fn handle_call(
+        &self,
+        registry: String,
+        item: String,
+        request: osquery::ExtensionPluginRequest,
+    ) -> thrift::Result<osquery::ExtensionResponse> {
+        unimplemented!("call with {}, {}, {:?}", registry, item, request)
+    }
+
+    fn handle_shutdown(&self) -> thrift::Result<()> {
+        Ok(())
+    }
+}

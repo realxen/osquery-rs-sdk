@@ -2,14 +2,26 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
-_CARGO_DEPS = ["@crate_index//:thrift"]
+_CARGO_DEPS = [
+    "@crate_index//:thrift",
+    "@crate_index//:tokio",
+    "@crate_index//:serde",
+    "@crate_index//:serde_json",
+]
+
+_CRATE_FEATURES = [
+    "server",
+    "client",
+    "plugins",
+]
 
 rust_library(
     name = "lib",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = _CRATE_FEATURES,
     visibility = ["//visibility:public"],
     deps = select({
-        "@alphaguard_bazel_rules//tools/platform:windows": _CARGO_DEPS + ["@crate_index//:miow"],
+        "@alphaguard_bazel_rules//tools/platform:windows": _CARGO_DEPS + ["@crate_index//:winapi"],
         "//conditions:default": _CARGO_DEPS,
     }),
 )
@@ -17,4 +29,5 @@ rust_library(
 rust_test(
     name = "tests",
     crate = ":lib",
+    crate_features = _CRATE_FEATURES,
 )

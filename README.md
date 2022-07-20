@@ -47,6 +47,14 @@ echo "/usr/local/osquery_extensions/my_logger.ext" > /tmp/extensions.load
 sudo osqueryd --extensions_autoload=/tmp/extensions.load --logger-plugin=my_logger -verbose
 ```
 
+## Examples
+
+```bash
+cargo build --example ${plugin_name} && mv ./target/debug/examples/${plugin_name} ./target/debug/examples/${plugin_name}.ext
+echo "${pwd}/target/debug/examples/${plugin_name}.ext" > /tmp/extensions.load
+osqueryd --extensions_autoload=/tmp/extensions.load --distributed_plugin=${plugin_name} -verbose --disable_distributed=false
+```
+
 ## Vulnerabilities
 
 If you find a vulnerability in this software, please email [security@alphaguard.io](mailto:security@alphaguard.io).

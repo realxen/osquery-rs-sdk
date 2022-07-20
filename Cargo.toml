@@ -11,8 +11,40 @@ rust-version = "1.61.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-thrift = "0.15.0"
-
+thrift = "0.16.0"
+tokio = { version = "1.19", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-miow = { version = "0.4.0" }
+winapi = { version = "0.3", default-features = false, features = [
+    "winbase",
+    "winerror",
+], optional = true }
+
+
+[features]
+default = ["server", "plugins"]
+client = ["dep:winapi"]
+server = ["client", "tokio/rt-multi-thread", "tokio/net", "tokio/io-util"]
+plugins = ["server", "dep:serde_json", "dep:serde"]
+
+[[example]]
+name = "query"
+crate-type = ["bin"]
+required-features = ["client"]
+
+[[example]]
+name = "config"
+crate-type = ["bin"]
+required-features = ["plugins"]
+
+[[example]]
+name = "logger"
+crate-type = ["bin"]
+required-features = ["plugins"]
+
+[[example]]
+name = "table"
+crate-type = ["bin"]
+required-features = ["plugins"]
