@@ -21,13 +21,7 @@ pub use crate::client::*;
 #[cfg(feature = "server")]
 pub use crate::server::*;
 
-/// A specialized [`Result`] type for Plugin operations.
-///
-/// This type is broadly used across [`osquery_rs::plugin`] for any operation which may
-/// produce an error.
-///
-/// This typedef is generally used to avoid writing out [`osquery_rs::plugin::Error`] directly and
-/// is otherwise a direct mapping to [`Result`].
+/// Result type used throughout the plugin APIs.
 pub type Result<T> = result::Result<T, Error>;
 
 /// Error type returned by all the plugins.

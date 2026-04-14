@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RUNTIME_DIR="${OSQUERY_RUNTIME_DIR:-/tmp/osquery-rs-devcontainer}"
+RUNTIME_DIR="${OSQUERY_RUNTIME_DIR:-/tmp/osquery-rs-sdk-devcontainer}"
 PIDFILE="${RUNTIME_DIR}/osqueryd.pid"
 SERVICE_PIDFILE="${RUNTIME_DIR}/osqueryd.service.pid"
 SOCKET="${OSQUERY_EXTENSION_SOCKET:-/var/osquery/osquery.em}"

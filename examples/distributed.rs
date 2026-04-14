@@ -1,4 +1,4 @@
-use osquery_rs::{
+use osquery_rs_sdk::{
     plugin::distributed::{DistributedPlugin, QueriesResquest, QueryResponse},
     ExtensionManagerServer, Result,
 };

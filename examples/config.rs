@@ -1,4 +1,4 @@
-use osquery_rs::{plugin::config::ConfigPlugin, ExtensionManagerServer, Result};
+use osquery_rs_sdk::{plugin::config::ConfigPlugin, ExtensionManagerServer, Result};
 use std::collections::BTreeMap;
 
 #[cfg(unix)]

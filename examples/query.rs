@@ -1,5 +1,5 @@
 fn main() {
-    let mut client = osquery_rs::ExtensionManagerClient::new().unwrap();
+    let mut client = osquery_rs_sdk::ExtensionManagerClient::new().unwrap();
     let resp = client
         .query(String::from("SELECT * from USERS limit 1"))
         .unwrap();

@@ -1,11 +1,20 @@
 [package]
-name = "osquery-rs"
+name = "osquery-rs-sdk"
 version = "0.1.0"
 description = "Rust bindings for osquery."
 readme = "README.md"
 authors = ["realxen <86901550+realxen@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/realxen/osquery-rs-sdk"
+homepage = "https://github.com/realxen/osquery-rs-sdk"
+documentation = "https://docs.rs/osquery-rs-sdk"
+keywords = ["osquery", "security", "extensions", "thrift"]
+categories = ["api-bindings", "development-tools"]
 edition = "2021"
 rust-version = "1.61.0"
+exclude = [
+    ".devcontainer/**",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

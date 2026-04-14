@@ -1,5 +1,5 @@
 {
-  "name": "osquery-rs Dev Container",
+  "name": "osquery-rs-sdk Dev Container",
   "dockerComposeFile": "docker-compose.yml",
   "service": "app",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",

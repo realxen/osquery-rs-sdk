@@ -1,12 +1,32 @@
-# osquery-rs
+# osquery-rs-sdk
 
 [osquery](https://github.com/osquery/osquery) exposes an operating system as a high-performance relational database. This allows you to write SQL-based queries to explore operating system data. With osquery, SQL tables represent abstract concepts such as running processes, loaded kernel modules, open network connections, browser plugins, hardware events, or file hashes.
 
 If you're interested in learning more about osquery, visit the [GitHub project](https://github.com/osquery/osquery), the [website](https://osquery.io), and the [user guide](https://osquery.readthedocs.io).
 
-## What is osquery-rs?
+## What is osquery-rs-sdk?
 
 In osquery, SQL tables, configuration retrieval, log handling, and similar behaviors are implemented through a plugin and extensions API. This project contains Rust bindings for creating osquery extensions in Rust. To create an extension, build an executable that instantiates an `ExtensionManagerServer` and registers the plugins you want to expose to osquery. You can then load that extension in either `osqueryd` or `osqueryi`. For more background, see the osquery [extension documentation](https://osquery.readthedocs.io/en/latest/deployment/extensions/).
+
+## Features
+
+- **Extension server support** - Run Rust-based osquery extensions against the standard extension manager socket
+- **Client support** - Connect to an existing osquery instance and execute queries through the Thrift API
+- **Table plugins** - Build custom table plugins exposed through osquery
+- **Logger plugins** - Implement Rust logging backends for osquery
+- **Config plugins** - Provide configuration sources from Rust code
+- **Distributed plugins** - Handle distributed query workflows from an extension
+- **Unix and Windows transport support** - Unix sockets on Unix-like systems and named pipes on Windows
+- **Examples and tests** - Includes runnable examples plus integration-style tests for live osquery workflows
+- **Reproducible container workflow** - Devcontainer setup with in-container `osqueryd` for development and test runs
+
+## Status
+
+`osquery-rs-sdk` is intended to be a small, focused library for:
+
+- building osquery extensions in Rust
+- talking to the osquery extension manager from Rust code
+- developing and testing extension flows with a reproducible devcontainer
 
 ## Building
 
@@ -54,7 +74,7 @@ This library can also be used to create a Rust client for the `osqueryd` or `osq
 
 ```rust
 fn main() {
-    let mut client = osquery_rs::ExtensionManagerClient::new().unwrap();
+    let mut client = osquery_rs_sdk::ExtensionManagerClient::new().unwrap();
     let resp = client.query("SELECT * FROM users").unwrap();
     println!("Got results {:?}", resp.response.unwrap());
 }
@@ -99,7 +119,11 @@ osqueryd --extensions_autoload=/tmp/extensions.load --distributed_plugin=${plugi
 
 ## Vulnerabilities
 
-If you find a vulnerability in this software, please report it privately through GitHub Security Advisories or contact the maintainer directly.
+Please see [SECURITY.md](SECURITY.md).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
 
 ## Acknowledgments
 

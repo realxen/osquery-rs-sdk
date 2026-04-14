@@ -1,4 +1,4 @@
-use osquery_rs::{
+use osquery_rs_sdk::{
     plugin::logger::{LogType, LoggerPlugin},
     ExtensionManagerServer, Result,
 };

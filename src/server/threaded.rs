@@ -48,11 +48,9 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                 .first_pipe_instance(true)
                 .create(path.as_ref())?;
             loop {
-                // Wait for client to connect.
                 match server.connect().await {
                     Ok(_) => {
-                        // Construct the next server to be connected returning the old pipe to be sent to a task.
-                        // Otherwise new clients might error with `io::ErrorKind::NotFound`.
+                        // Rotate to a fresh pipe instance before handing the connected one to a task.
                         self.handle_connection(std::mem::replace(
                             &mut server,
                             ServerOptions::new().create(pipe_name)?,
@@ -106,7 +104,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                 match read_transport.fill_buf().await {
                     Ok(s) => {
                         let buf_count = s.len();
-                        let mut write_tran = Vec::new(); // TODO: This might be wasteful maybe using a BufWriter will help ?
+                        let mut write_tran = Vec::new(); // TODO: Reuse or buffer writes to avoid per-request allocations.
                         let mut i_proto = TBinaryInputProtocol::new(s, false);
                         let mut o_proto = TBinaryOutputProtocol::new(&mut write_tran, true);
 
@@ -123,10 +121,9 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                                 break;
                             }
                         }
-                        // TODO: this function will cause an infinite loop if writer keeps failing.
-                        // we write the data to socket transport.
+                        // TODO: Break out on persistent write failures instead of retrying forever.
                         if writer.write_all(write_tran.as_ref()).await.is_ok() {
-                            // If the processor succeeded then we consume the bytes from the reader
+                            // Advance the read buffer only after the response has been written.
                             read_transport.consume(buf_count);
                         }
                     }
@@ -145,20 +142,19 @@ mod tests {
     use crate::{client, osquery};
     use std::path::PathBuf;
 
-    // init server and allow some time to start.
-    fn init_server(name: &str) -> PathBuf {
+        // Use a unique socket per test case to avoid cross-test interference.
+        fn init_server(name: &str) -> PathBuf {
         #[cfg(unix)]
-        let socket: PathBuf = format!("/tmp/osquery_rs.server.{}.test.em", name).into();
+        let socket: PathBuf = format!("/tmp/osquery_rs_sdk.server.{}.test.em", name).into();
         #[cfg(windows)]
-        let socket: PathBuf = format!(r"\\.\pipe\osquery_rs.server.{}.test.em", name).into();
+        let socket: PathBuf = format!(r"\\.\pipe\osquery_rs_sdk.server.{}.test.em", name).into();
 
-        std::fs::remove_file(&socket).ok(); // cleanup test socket
+        std::fs::remove_file(&socket).ok();
 
         let handler = MockExtensionServerHandler {};
         let processor = osquery::ExtensionSyncProcessor::new(handler);
         let mut server = ExtensionServer::new(processor).unwrap();
 
-        // Start the server
         let socket_path = socket.clone();
         std::thread::spawn(move || {
             server.listen(socket_path).unwrap();
@@ -205,7 +201,6 @@ mod tests {
             let test_socket = test_socket.clone();
             // The sender endpoint can be copied
             let thread_tx = tx.clone();
-            // Each thread will send its id via the channel
             let child = std::thread::spawn(move || {
                 let mut client = client::ExtensionManagerClient::new_with_path(test_socket)
                     .unwrap_or_else(|e| panic!("error connecting id: {} {}", id, e));
