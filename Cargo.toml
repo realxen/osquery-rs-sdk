@@ -11,7 +11,7 @@ documentation = "https://docs.rs/osquery-rs-sdk"
 keywords = ["osquery", "security", "extensions", "thrift"]
 categories = ["api-bindings", "development-tools"]
 edition = "2021"
-rust-version = "1.61.0"
+rust-version = "1.71.0"
 exclude = [
     ".devcontainer/**",
 ]
@@ -23,6 +23,7 @@ thrift = "0.16.0"
 tokio = { version = "1.19", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+tracing = { version = "0.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", default-features = false, features = [
@@ -36,6 +37,8 @@ default = ["server", "plugins"]
 client = ["dep:winapi"]
 server = ["client", "tokio/rt-multi-thread", "tokio/net", "tokio/io-util"]
 plugins = ["server", "dep:serde_json", "dep:serde"]
+tracing = ["dep:tracing"]
+mock = ["client"]
 
 [[example]]
 name = "query"

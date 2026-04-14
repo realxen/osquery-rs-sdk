@@ -39,21 +39,26 @@ impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigP
         &self.registry
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self, req), fields(plugin = %self.name))
+    )]
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
         match req.get("action") {
-            Some(action) if action == "genConfig" => {
-                // let configs = (self.generate)();
-                match (self.generate)() {
-                    Ok(conf) => osquery::ExtensionResponse::new(
-                        osquery::ExtensionStatus::new(0, String::from("OK"), None),
-                        osquery::ExtensionPluginResponse::from([conf]),
-                    ),
-                    Err(err) => osquery::ExtensionResponse::new(
+            Some(action) if action == "genConfig" => match (self.generate)() {
+                Ok(conf) => osquery::ExtensionResponse::new(
+                    osquery::ExtensionStatus::new(0, String::from("OK"), None),
+                    osquery::ExtensionPluginResponse::from([conf]),
+                ),
+                Err(err) => {
+                    #[cfg(feature = "tracing")]
+                    tracing::error!("error getting config: {}", err);
+                    osquery::ExtensionResponse::new(
                         osquery::ExtensionStatus::new(1, err.message("error getting config"), None),
                         None,
-                    ),
+                    )
                 }
-            }
+            },
             Some(action) => osquery::ExtensionResponse::new(
                 osquery::ExtensionStatus::new(1, format!("unknown action: {}", action), None),
                 None,

@@ -518,6 +518,10 @@ impl<GenFunc: FnMut(QueryContext) -> Result<Table> + Send + Sync> OsqueryPlugin
         routes
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self, req), fields(plugin = %self.name))
+    )]
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
         let ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
         match req.get("action") {
@@ -525,23 +529,25 @@ impl<GenFunc: FnMut(QueryContext) -> Result<Table> + Send + Sync> OsqueryPlugin
                 Some(s) => match serde_json::from_str::<QueryContext>(s) {
                     Ok(ctx) => match (self.generate)(ctx) {
                         Ok(table) => osquery::ExtensionResponse::new(ok, table),
-                        Err(err) => osquery::ExtensionResponse::new(
-                            osquery::ExtensionStatus::new(
-                                1,
-                                format!("error generating table: {}", err),
+                        Err(err) => {
+                            let msg = format!("error generating table: {}", err);
+                            #[cfg(feature = "tracing")]
+                            tracing::error!("{}", msg);
+                            osquery::ExtensionResponse::new(
+                                osquery::ExtensionStatus::new(1, msg, None),
                                 None,
-                            ),
-                            None,
-                        ),
+                            )
+                        }
                     },
-                    Err(err) => osquery::ExtensionResponse::new(
-                        osquery::ExtensionStatus::new(
-                            1,
-                            format!("error parsing context JSON: {}", err),
+                    Err(err) => {
+                        let msg = format!("error parsing context JSON: {}", err);
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("{}", msg);
+                        osquery::ExtensionResponse::new(
+                            osquery::ExtensionStatus::new(1, msg, None),
                             None,
-                        ),
-                        None,
-                    ),
+                        )
+                    }
                 },
                 None => osquery::ExtensionResponse::new(
                     osquery::ExtensionStatus::new(1, String::from("query context is nil"), None),

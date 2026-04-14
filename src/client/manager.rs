@@ -212,6 +212,7 @@ impl ExtensionManagerClient {
 
     /// close closes the transport connection. After close is called,
     /// other methods may return errors.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn close(&mut self) {
         if let Some(stream) = self.stream.take() {
             #[cfg(unix)]
@@ -223,11 +224,16 @@ impl ExtensionManagerClient {
     }
 
     /// ping requests metadata from the extension manager.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
         self.with_client(|c| c.ping())
     }
 
     /// call requests a call to an extension (or core) registry plugin.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self, request), fields(registry = %registry, item = %item))
+    )]
     pub fn call(
         &mut self,
         registry: String,
@@ -238,21 +244,25 @@ impl ExtensionManagerClient {
     }
 
     /// shutdown calls the thrift shutdown RPC on the remote end.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn shutdown(&mut self) -> TResult<()> {
         self.with_client(|c| c.shutdown())
     }
 
     /// extensions requests the list of active registered extensions.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
         self.with_client(|c| c.extensions())
     }
 
     /// options requests the list of bootstrap or configuration options.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn options(&mut self) -> TResult<osquery::InternalOptionList> {
         self.with_client(|c| c.options())
     }
 
     /// register_extension registers the extension plugins with the osquery process.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, info, registry)))]
     pub fn register_extension(
         &mut self,
         info: osquery::InternalExtensionInfo,
@@ -262,6 +272,10 @@ impl ExtensionManagerClient {
     }
 
     /// deregister_extension de-registers the extension plugins with the osquery process.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(uuid = uuid))
+    )]
     pub fn deregister_extension(
         &mut self,
         uuid: osquery::ExtensionRouteUUID,
@@ -271,11 +285,13 @@ impl ExtensionManagerClient {
 
     /// query requests a query to be run and returns the extension response.
     /// Consider using the query_row or query_rows helpers for a more friendly interface.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.with_client(|c| c.query(sql))
     }
 
     /// get_query_columns requests the columns returned by the parsed query.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.with_client(|c| c.get_query_columns(sql))
     }
@@ -283,6 +299,7 @@ impl ExtensionManagerClient {
     /// query_rows is a helper that executes the requested query and returns the TResults.
     /// It handles checking both the transport level TErrors and the osquery internal TErrors
     /// by returning a Thrift TError type.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query_rows(&mut self, sql: &str) -> TResult<Vec<BTreeMap<String, String>>> {
         let res = self.with_client(|c| c.query(String::from(sql)))?;
 
@@ -301,6 +318,7 @@ impl ExtensionManagerClient {
 
     /// query_row behaves similarly to query_rows, but it returns an TError if the query
     /// does not return exactly one row.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query_row(&mut self, sql: &str) -> TResult<BTreeMap<String, String>> {
         let res = self.query_rows(sql)?;
         match res.len() {

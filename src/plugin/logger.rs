@@ -80,6 +80,10 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
         &self.registry
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self, req), fields(plugin = %self.name))
+    )]
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
         let mut errors = Vec::new();
         for (typ, log) in &req {

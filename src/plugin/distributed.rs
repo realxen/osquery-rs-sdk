@@ -234,6 +234,10 @@ where
         &self.registry
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self, req), fields(plugin = %self.name))
+    )]
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
         let result: Result<_> = match req.get("action") {
             // Call get_queries

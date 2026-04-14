@@ -207,6 +207,7 @@ impl ExtensionManagerServer {
 
     /// start open a new thread and begins listening for requests from the osquery process.
     /// All plugins should be registered with register_plugin() before calling start().
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, shutdown)))]
     fn start(&mut self, shutdown: ShutdownSignal) -> Result<()> {
         // will set the uuid and listen_path for the server
         self.register_extension()?;
@@ -234,6 +235,7 @@ impl ExtensionManagerServer {
     }
 
     /// shutdown deregisters the extension, stops the server and closes all sockets.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn shutdown(&mut self) -> Result<()> {
         let uuid = self.uuid.ok_or_else(|| "uuid returned nil")?;
         let mut client = self
@@ -259,6 +261,10 @@ impl ExtensionManagerServer {
 
     /// run starts the extension manager until osquery calls for a shutdown
     /// or the osquery instance goes away.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(name = %self.name))
+    )]
     pub fn run(mut self) -> Result<()> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let ping_interval = self.ping_interval;
@@ -303,10 +309,15 @@ struct ExtensionServerHandler {
 }
 
 impl osquery::ExtensionSyncHandler for ExtensionServerHandler {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), level = "debug"))]
     fn handle_ping(&self) -> thrift::Result<osquery::ExtensionStatus> {
         Ok(osquery::ExtensionStatus::new(0, "OK".to_string(), None))
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self, request), fields(registry = %registry, item = %item))
+    )]
     fn handle_call(
         &self,
         registry: String,
@@ -321,19 +332,25 @@ impl osquery::ExtensionSyncHandler for ExtensionServerHandler {
         {
             Some(subreg) => match subreg.get_mut(&item) {
                 Some(plugin) => Ok(plugin.call(request)),
-                None => Ok(osquery::ExtensionResponse::new(
-                    osquery::ExtensionStatus::new(
-                        1,
-                        format!("Unknown registry item: {}", item),
+                None => {
+                    let msg = format!("Unknown registry item: {}", item);
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("{}", msg);
+                    Ok(osquery::ExtensionResponse::new(
+                        osquery::ExtensionStatus::new(1, msg, None),
                         None,
-                    ),
-                    None,
-                )),
+                    ))
+                }
             },
-            None => Ok(osquery::ExtensionResponse::new(
-                osquery::ExtensionStatus::new(1, format!("Unknown registry: {}", registry), None),
-                None,
-            )),
+            None => {
+                let msg = format!("Unknown registry: {}", registry);
+                #[cfg(feature = "tracing")]
+                tracing::warn!("{}", msg);
+                Ok(osquery::ExtensionResponse::new(
+                    osquery::ExtensionStatus::new(1, msg, None),
+                    None,
+                ))
+            }
         }
     }
 

@@ -16,6 +16,9 @@ mod server;
 #[cfg(feature = "plugins")]
 pub mod plugin;
 
+#[cfg(feature = "mock")]
+pub mod mock;
+
 #[cfg(feature = "client")]
 pub use crate::client::*;
 #[cfg(feature = "server")]
