@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use thrift::{
     protocol::{TBinaryInputProtocol, TBinaryOutputProtocol, TInputProtocol, TOutputProtocol},
@@ -15,9 +16,28 @@ type TClient = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 type TClient = super::named_pipe::NamedPipeClient;
 
+/// Default wait time for acquiring the client lock.
+const DEFAULT_WAIT_TIME: Duration = Duration::from_millis(200);
+
+/// Maximum wait time for acquiring the client lock.
+const DEFAULT_MAX_WAIT_TIME: Duration = Duration::from_secs(60);
+
+/// ClientOption configures an [`ExtensionManagerClient`].
+pub enum ClientOption {
+    /// Set the default wait time for acquiring the client lock.
+    /// Used when no explicit timeout is provided (default: 200ms).
+    DefaultWaitTime(Duration),
+    /// Set the maximum wait time for acquiring the client lock (default: 60s).
+    /// Takes precedence over context deadlines when context propagation is added.
+    MaxWaitTime(Duration),
+}
+
 /// ExtensionManager represents an extension manager, which handles the
 /// communication with the osquery core process.
 pub trait ExtensionManager: Send + Sync {
+    /// close closes the transport connection. After close is called,
+    /// other methods may return errors.
+    fn close(&mut self) {}
     /// ping requests metadata from the extension manager.
     fn ping(&mut self) -> TResult<osquery::ExtensionStatus>;
     /// call requests a call to an extension (or core) registry plugin.
@@ -53,6 +73,31 @@ pub trait ExtensionManager: Send + Sync {
 /// ExtensionManagerClient is a wrapper for the osquery Thrift extensions API.
 pub struct ExtensionManagerClient {
     client: Arc<Mutex<dyn osquery::TExtensionManagerSyncClient + Send + Sync>>,
+    stream: Option<TClient>,
+    wait_time: Duration,
+    max_wait_time: Duration,
+}
+
+/// Polls for the socket file to exist, checking every 200ms until the
+/// timeout is reached.
+fn wait_for_socket(path: &Path, timeout: Duration) -> std::io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if path.exists() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "timed out after {:?} waiting for socket at {}",
+                    timeout,
+                    path.display()
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// ExtensionManagerClient is a wrapper for the osquery Thrift extensions API.
@@ -66,17 +111,58 @@ impl ExtensionManagerClient {
     }
 
     /// create a new client communicating to osquery over the provided socket path.
-    /// by default it will use a `TBinary` protocol with a `TBuffered` transport
+    /// The connection is attempted immediately without polling for the socket to exist.
     pub fn new_with_path<P: AsRef<Path>>(path: P) -> TResult<Self> {
-        let client = TClient::connect(&path)
+        let stream = TClient::connect(&path)
             .map_err(|e| format!("connecting to {}: {}", path.as_ref().display(), e))?;
+        Self::from_stream(stream)
+    }
 
-        let transport_in = TBufferedReadTransport::new(client.try_clone().unwrap());
-        let transport_out = TBufferedWriteTransport::new(client.try_clone().unwrap());
+    /// create a new client communicating to osquery over the provided socket path,
+    /// polling for the socket to exist up to `socket_open_timeout`. Options can
+    /// be used to configure the lock wait times.
+    pub fn new_with_timeout<P: AsRef<Path>>(
+        path: P,
+        socket_open_timeout: Duration,
+        opts: Vec<ClientOption>,
+    ) -> TResult<Self> {
+        wait_for_socket(path.as_ref(), socket_open_timeout)
+            .map_err(|e| format!("waiting for socket: {}", e))?;
+
+        let stream = TClient::connect(&path)
+            .map_err(|e| format!("connecting to {}: {}", path.as_ref().display(), e))?;
+        let mut client = Self::from_stream(stream)?;
+
+        for opt in opts {
+            match opt {
+                ClientOption::DefaultWaitTime(d) => client.wait_time = d,
+                ClientOption::MaxWaitTime(d) => client.max_wait_time = d,
+            }
+        }
+
+        if client.wait_time > client.max_wait_time {
+            return Err("default wait time larger than max wait time".into());
+        }
+
+        Ok(client)
+    }
+
+    /// Build a client from an already-connected stream.
+    fn from_stream(stream: TClient) -> TResult<Self> {
+        let transport_in = TBufferedReadTransport::new(stream.try_clone().unwrap());
+        let transport_out = TBufferedWriteTransport::new(stream.try_clone().unwrap());
         let protocol_in = Box::new(TBinaryInputProtocol::new(transport_in, false));
         let protocol_out = Box::new(TBinaryOutputProtocol::new(transport_out, true));
 
-        Ok(Self::new_with_proto(protocol_in, protocol_out))
+        Ok(Self {
+            client: Arc::from(Mutex::new(osquery::ExtensionManagerSyncClient::new(
+                protocol_in,
+                protocol_out,
+            ))),
+            stream: Some(stream),
+            wait_time: DEFAULT_WAIT_TIME,
+            max_wait_time: DEFAULT_MAX_WAIT_TIME,
+        })
     }
 
     /// creates a new client communicating to osquery over the provided transports.
@@ -89,15 +175,56 @@ impl ExtensionManagerClient {
                 input_protocol,
                 output_protocol,
             ))),
+            stream: None,
+            wait_time: DEFAULT_WAIT_TIME,
+            max_wait_time: DEFAULT_MAX_WAIT_TIME,
+        }
+    }
+
+    /// Execute a closure with the client lock held, with a timeout on lock
+    /// acquisition. Uses `try_lock` polling every millisecond, timing out
+    /// after `wait_time`. This prevents indefinite blocking when the
+    /// underlying thrift socket is held by another thread.
+    fn with_client<R>(
+        &self,
+        f: impl FnOnce(&mut (dyn osquery::TExtensionManagerSyncClient + Send + Sync)) -> TResult<R>,
+    ) -> TResult<R> {
+        let deadline = Instant::now() + self.wait_time;
+        loop {
+            match self.client.try_lock() {
+                Ok(mut guard) => return f(&mut *guard),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "timeout after {:?} waiting for client lock",
+                            self.wait_time
+                        )
+                        .into());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("client lock poisoned".into());
+                }
+            }
+        }
+    }
+
+    /// close closes the transport connection. After close is called,
+    /// other methods may return errors.
+    pub fn close(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            #[cfg(unix)]
+            {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            drop(stream);
         }
     }
 
     /// ping requests metadata from the extension manager.
     pub fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread in ping")?
-            .ping()
+        self.with_client(|c| c.ping())
     }
 
     /// call requests a call to an extension (or core) registry plugin.
@@ -107,34 +234,22 @@ impl ExtensionManagerClient {
         item: String,
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread in call")?
-            .call(registry, item, request)
+        self.with_client(|c| c.call(registry, item, request))
     }
 
-    /// shutdown should be called to close the transport when use of the client is completed.
+    /// shutdown calls the thrift shutdown RPC on the remote end.
     pub fn shutdown(&mut self) -> TResult<()> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread in shutdown")?
-            .shutdown()
+        self.with_client(|c| c.shutdown())
     }
 
     /// extensions requests the list of active registered extensions.
     pub fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread getting extensions")?
-            .extensions()
+        self.with_client(|c| c.extensions())
     }
 
     /// options requests the list of bootstrap or configuration options.
     pub fn options(&mut self) -> TResult<osquery::InternalOptionList> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread getting options")?
-            .options()
+        self.with_client(|c| c.options())
     }
 
     /// register_extension registers the extension plugins with the osquery process.
@@ -143,10 +258,7 @@ impl ExtensionManagerClient {
         info: osquery::InternalExtensionInfo,
         registry: osquery::ExtensionRegistry,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread registering extension")?
-            .register_extension(info, registry)
+        self.with_client(|c| c.register_extension(info, registry))
     }
 
     /// deregister_extension de-registers the extension plugins with the osquery process.
@@ -154,39 +266,25 @@ impl ExtensionManagerClient {
         &mut self,
         uuid: osquery::ExtensionRouteUUID,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread deregister extension")?
-            .deregister_extension(uuid)
+        self.with_client(|c| c.deregister_extension(uuid))
     }
 
     /// query requests a query to be run and returns the extension response.
     /// Consider using the query_row or query_rows helpers for a more friendly interface.
     pub fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread for query")?
-            .query(sql)
+        self.with_client(|c| c.query(sql))
     }
 
     /// get_query_columns requests the columns returned by the parsed query.
     pub fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.client
-            .lock()
-            .map_err(|_| "could not lock thread for columns query")?
-            .get_query_columns(sql)
+        self.with_client(|c| c.get_query_columns(sql))
     }
 
     /// query_rows is a helper that executes the requested query and returns the TResults.
     /// It handles checking both the transport level TErrors and the osquery internal TErrors
     /// by returning a Thrift TError type.
     pub fn query_rows(&mut self, sql: &str) -> TResult<Vec<BTreeMap<String, String>>> {
-        let res = self
-            .client
-            .lock()
-            .map_err(|_| "could not lock thread in query")?
-            .query(String::from(sql))
-            .map_err(|err| format!("transport TError in query: {}", err))?;
+        let res = self.with_client(|c| c.query(String::from(sql)))?;
 
         let status = res.status.ok_or("query returned nil status")?;
 
@@ -213,62 +311,56 @@ impl ExtensionManagerClient {
 }
 
 impl ExtensionManager for ExtensionManagerClient {
-    /// ping requests metadata from the extension manager.
-    fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
-        self.ping()
+    fn close(&mut self) {
+        ExtensionManagerClient::close(self)
     }
 
-    /// call requests a call to an extension (or core) registry plugin.
+    fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
+        ExtensionManagerClient::ping(self)
+    }
+
     fn call(
         &mut self,
         registry: String,
         item: String,
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse> {
-        self.call(registry, item, request)
+        ExtensionManagerClient::call(self, registry, item, request)
     }
 
-    /// shutdown should be called to close the transport when use of the client is completed.
     fn shutdown(&mut self) -> TResult<()> {
-        self.shutdown()
+        ExtensionManagerClient::shutdown(self)
     }
 
-    /// extensions requests the list of active registered extensions.
     fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
-        self.extensions()
+        ExtensionManagerClient::extensions(self)
     }
 
-    /// options requests the list of bootstrap or configuration options.
     fn options(&mut self) -> TResult<osquery::InternalOptionList> {
-        self.options()
+        ExtensionManagerClient::options(self)
     }
 
-    /// register_extension registers the extension plugins with the osquery process.
     fn register_extension(
         &mut self,
         info: osquery::InternalExtensionInfo,
         registry: osquery::ExtensionRegistry,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.register_extension(info, registry)
+        ExtensionManagerClient::register_extension(self, info, registry)
     }
 
-    /// deregister_extension de-registers the extension plugins with the osquery process.
     fn deregister_extension(
         &mut self,
         uuid: osquery::ExtensionRouteUUID,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.deregister_extension(uuid)
+        ExtensionManagerClient::deregister_extension(self, uuid)
     }
 
-    /// query requests a query to be run and returns the extension response.
-    /// Consider using the query_row or query_rows helpers for a more friendly interface.
     fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.query(sql)
+        ExtensionManagerClient::query(self, sql)
     }
 
-    /// get_query_columns requests the columns returned by the parsed query.
     fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.get_query_columns(sql)
+        ExtensionManagerClient::get_query_columns(self, sql)
     }
 }
 
@@ -296,5 +388,79 @@ mod tests {
     fn query_row() {
         let mut client = ExtensionManagerClient::new_with_path(TEST_SOCKET).unwrap();
         client.query_row("SELECT * FROM users limit 1").unwrap();
+    }
+
+    #[test]
+    fn wait_for_socket_timeout() {
+        let path = std::path::Path::new("/tmp/nonexistent_osquery_test_socket.em");
+        let result = wait_for_socket(path, Duration::from_millis(300));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            err.to_string().contains("timed out"),
+            "error should mention timeout: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn wait_for_socket_exists() {
+        // Use a path that exists (e.g., /tmp) to verify early return
+        let path = std::path::Path::new("/tmp");
+        let result = wait_for_socket(path, Duration::from_millis(100));
+        assert!(result.is_ok(), "should succeed for existing path");
+    }
+
+    #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
+    fn new_with_timeout_connects() {
+        let client =
+            ExtensionManagerClient::new_with_timeout(TEST_SOCKET, Duration::from_secs(5), vec![]);
+        assert!(client.is_ok(), "should connect to running osqueryd");
+    }
+
+    #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
+    fn new_with_timeout_options() {
+        let client = ExtensionManagerClient::new_with_timeout(
+            TEST_SOCKET,
+            Duration::from_secs(5),
+            vec![
+                ClientOption::DefaultWaitTime(Duration::from_millis(500)),
+                ClientOption::MaxWaitTime(Duration::from_secs(30)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(client.wait_time, Duration::from_millis(500));
+        assert_eq!(client.max_wait_time, Duration::from_secs(30));
+    }
+
+    #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
+    fn new_with_timeout_invalid_wait_times() {
+        let result = ExtensionManagerClient::new_with_timeout(
+            TEST_SOCKET,
+            Duration::from_secs(5),
+            vec![
+                ClientOption::DefaultWaitTime(Duration::from_secs(10)),
+                ClientOption::MaxWaitTime(Duration::from_secs(1)),
+            ],
+        );
+        assert!(result.is_err(), "should reject default > max wait time");
+    }
+
+    #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
+    fn close_then_ping_errors() {
+        let mut client = ExtensionManagerClient::new_with_path(TEST_SOCKET).unwrap();
+        client.ping().unwrap(); // should succeed
+        client.close();
+        // After close, ping should fail (transport is closed)
+        assert!(client.ping().is_err(), "ping should fail after close");
     }
 }

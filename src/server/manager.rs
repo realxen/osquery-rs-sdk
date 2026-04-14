@@ -18,17 +18,47 @@ type Registry = Arc<Mutex<BTreeMap<String, Plugins>>>;
 /// sender for server shutdown
 type ShutdownSignal = mpsc::SyncSender<Option<Error>>;
 
+/// Default timeout for connecting to the osquery socket.
+const DEFAULT_TIMEOUT: time::Duration = time::Duration::from_secs(1);
+
+/// Default interval for pinging osquery to check connectivity.
+const DEFAULT_PING_INTERVAL: time::Duration = time::Duration::from_secs(5);
+
+/// Maximum characters allowed in a socket path. A UUID suffix (e.g., ".12345")
+/// is appended downstream, which could exceed the Unix socket path limit of
+/// ~103 characters.
+/// See: <https://unix.stackexchange.com/questions/367008/why-is-socket-path-length-limited-to-a-hundred-chars>
+pub const MAX_SOCKET_PATH_CHARACTERS: usize = 97;
+
+/// ServerOption configures an [`ExtensionManagerServer`].
+pub enum ServerOption {
+    /// Set the extension version string reported to osquery.
+    ExtensionVersion(String),
+    /// Set the timeout for connecting to the osquery socket.
+    /// Currently stored for forward-compatibility; will be used when the
+    /// transport layer supports connection timeouts.
+    ServerTimeout(time::Duration),
+    /// Set how often the extension pings osquery to check connectivity.
+    ServerPingInterval(time::Duration),
+    /// Use an existing client instead of creating a new one.
+    /// When set, the server will not shut down the client on server shutdown.
+    WithClient(Box<dyn client::ExtensionManager>),
+}
+
 // ExtensionManagerServer is an implementation of the full ExtensionManager
 // API. Plugins can register with an extension manager, which handles the
 // communication with the osquery process.
 pub struct ExtensionManagerServer {
     name: String,
     version: Option<String>,
-    osquery_client: Arc<Mutex<client::ExtensionManagerClient>>,
+    osquery_client: Arc<Mutex<Box<dyn client::ExtensionManager>>>,
+    server_client_should_shutdown: bool,
     registry: Registry,
     socket_path: PathBuf,
     listen_path: Option<PathBuf>,
     uuid: Arc<Option<osquery::ExtensionRouteUUID>>,
+    #[allow(dead_code)] // Stored for forward-compatibility with transport-layer timeouts.
+    timeout: time::Duration,
     ping_interval: time::Duration, // How often to ping osquery server
 }
 
@@ -38,27 +68,63 @@ impl ExtensionManagerServer {
     /// resolving the address or connecting to the socket fails, this function will
     /// error.
     pub fn new<P: AsRef<Path>>(name: &str, socket_path: P) -> Result<Self> {
-        let client = client::ExtensionManagerClient::new_with_path(&socket_path)?;
-        Ok(Self::new_with_client(name, socket_path, client))
+        Self::new_with_opts(name, socket_path, vec![])
     }
 
-    /// create a new extension management server
-    /// communicating with osquery with provided client
-    fn new_with_client<P: AsRef<Path>>(
+    /// new_with_opts creates a new extension management server with the given
+    /// options. If resolving the address or connecting to the socket fails,
+    /// this function will error.
+    pub fn new_with_opts<P: AsRef<Path>>(
         name: &str,
         socket_path: P,
-        client: client::ExtensionManagerClient,
-    ) -> Self {
-        Self {
+        opts: Vec<ServerOption>,
+    ) -> Result<Self> {
+        let path = socket_path.as_ref();
+        let path_len = path.as_os_str().len();
+        if path_len > MAX_SOCKET_PATH_CHARACTERS {
+            return Err(format!(
+                "socket path {} ({} characters) exceeded the maximum socket path character length of {}",
+                path.display(),
+                path_len,
+                MAX_SOCKET_PATH_CHARACTERS
+            )
+            .into());
+        }
+
+        let mut version = None;
+        let mut timeout = DEFAULT_TIMEOUT;
+        let mut ping_interval = DEFAULT_PING_INTERVAL;
+        let mut provided_client: Option<Box<dyn client::ExtensionManager>> = None;
+
+        for opt in opts {
+            match opt {
+                ServerOption::ExtensionVersion(v) => version = Some(v),
+                ServerOption::ServerTimeout(t) => timeout = t,
+                ServerOption::ServerPingInterval(i) => ping_interval = i,
+                ServerOption::WithClient(c) => provided_client = Some(c),
+            }
+        }
+
+        let (osquery_client, server_client_should_shutdown) = match provided_client {
+            Some(c) => (c, false),
+            None => {
+                let c = client::ExtensionManagerClient::new_with_path(&socket_path)?;
+                (Box::new(c) as Box<dyn client::ExtensionManager>, true)
+            }
+        };
+
+        Ok(Self {
             name: name.to_string(),
             registry: Arc::from(Mutex::new(BTreeMap::new())),
-            socket_path: socket_path.as_ref().to_path_buf(),
-            osquery_client: Arc::from(Mutex::new(client)),
+            socket_path: path.to_path_buf(),
+            osquery_client: Arc::from(Mutex::new(osquery_client)),
+            server_client_should_shutdown,
             uuid: Arc::from(None),
-            version: None,
+            version,
             listen_path: None,
-            ping_interval: time::Duration::from_secs(5),
-        }
+            timeout,
+            ping_interval,
+        })
     }
 
     /// get extension uuid
@@ -66,7 +132,7 @@ impl ExtensionManagerServer {
         *self.uuid
     }
 
-    /// register_plugin add an `OsqueryPlugin` to this extension manager registry.
+    /// register_plugin adds an `OsqueryPlugin` to this extension manager registry.
     pub fn register_plugin(&mut self, plugin: Box<dyn OsqueryPlugin>) -> Result<()> {
         self.registry
             .try_lock()
@@ -76,6 +142,14 @@ impl ExtensionManagerServer {
             .entry(plugin.name())
             .or_insert(plugin);
 
+        Ok(())
+    }
+
+    /// register_plugins adds multiple [`OsqueryPlugin`]s to this extension manager registry.
+    pub fn register_plugins(&mut self, plugins: Vec<Box<dyn OsqueryPlugin>>) -> Result<()> {
+        for plugin in plugins {
+            self.register_plugin(plugin)?;
+        }
         Ok(())
     }
 
@@ -175,7 +249,11 @@ impl ExtensionManagerServer {
                 res.message.unwrap_or_default()
             )
             .into()),
-            Ok(_) => client.shutdown().map_err(Error::from),
+            Ok(_) if self.server_client_should_shutdown => {
+                client.close();
+                Ok(())
+            }
+            Ok(_) => Ok(()),
         }
     }
 
@@ -184,24 +262,26 @@ impl ExtensionManagerServer {
     pub fn run(mut self) -> Result<()> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let ping_interval = self.ping_interval;
-        let socket_path = self.socket_path.clone();
+        let osquery_client = self.osquery_client.clone();
 
         self.start(tx.clone())?;
 
         // Watch for the osquery process going away. If so, initiate shutdown.
-        std::thread::spawn(move || {
-            match client::ExtensionManagerClient::new_with_path(&socket_path) {
-                Ok(mut client) => loop {
-                    std::thread::sleep(ping_interval);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(ping_interval);
+            match osquery_client.lock() {
+                Ok(mut client) => {
                     if let Err(e) = client.ping() {
                         let msg = Error::from(e).message("extension ping failed");
                         tx.send(Some(msg)).ok();
                         break;
                     }
-                },
-                Err(e) => tx
-                    .send(Some(Error::from(e).message("ping client failed")))
-                    .unwrap(),
+                }
+                Err(_) => {
+                    tx.send(Some(Error::from("could not lock osquery client for ping")))
+                        .ok();
+                    break;
+                }
             }
         });
 
@@ -476,6 +556,97 @@ mod tests {
             res.status.unwrap().message.unwrap(),
             "Unknown registry item: hello",
             "hello should not be found"
+        );
+    }
+
+    #[test]
+    fn socket_path_too_long() {
+        let long_path = "a".repeat(MAX_SOCKET_PATH_CHARACTERS + 1);
+        let result = ExtensionManagerServer::new("test", &long_path);
+        match result {
+            Err(e) => assert!(
+                e.to_string()
+                    .contains("exceeded the maximum socket path character length"),
+                "should report socket path length error, got: {}",
+                e
+            ),
+            Ok(_) => panic!("expected error for long socket path"),
+        }
+    }
+
+    #[test]
+    fn socket_path_at_limit() {
+        // A path exactly at the limit should not fail with a length error.
+        // It will fail trying to connect (no such socket), which is expected.
+        let limit_path = "a".repeat(MAX_SOCKET_PATH_CHARACTERS);
+        let result = ExtensionManagerServer::new("test", &limit_path);
+        match result {
+            Err(e) => assert!(
+                !e.to_string()
+                    .contains("exceeded the maximum socket path character length"),
+                "should not be a path length error, got: {}",
+                e
+            ),
+            Ok(_) => panic!("expected connection error for non-existent socket"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
+    fn new_with_opts() {
+        let server = ExtensionManagerServer::new_with_opts(
+            "test_opts",
+            String::from(SOCKET),
+            vec![
+                ServerOption::ExtensionVersion("1.0.0".to_string()),
+                ServerOption::ServerTimeout(time::Duration::from_secs(2)),
+                ServerOption::ServerPingInterval(time::Duration::from_secs(10)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(server.version, Some("1.0.0".to_string()));
+        assert_eq!(server.timeout, time::Duration::from_secs(2));
+        assert_eq!(server.ping_interval, time::Duration::from_secs(10));
+        assert!(
+            server.server_client_should_shutdown,
+            "server-created client should be marked for shutdown"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
+    fn register_plugins_batch() {
+        let mut server = init_server();
+        let plugins: Vec<Box<dyn OsqueryPlugin>> = vec![
+            mock::MockPlugin::new("plugin_a", RegistryName::Table),
+            mock::MockPlugin::new("plugin_b", RegistryName::Logger),
+            mock::MockPlugin::new("plugin_c", RegistryName::Config),
+        ];
+        server.register_plugins(plugins).unwrap();
+
+        let registry = server.registry.lock().unwrap();
+        assert!(
+            registry
+                .get("table")
+                .and_then(|r| r.get(&"plugin_a".to_string()))
+                .is_some(),
+            "plugin_a should be in table registry"
+        );
+        assert!(
+            registry
+                .get("logger")
+                .and_then(|r| r.get(&"plugin_b".to_string()))
+                .is_some(),
+            "plugin_b should be in logger registry"
+        );
+        assert!(
+            registry
+                .get("config")
+                .and_then(|r| r.get(&"plugin_c".to_string()))
+                .is_some(),
+            "plugin_c should be in config registry"
         );
     }
 }
