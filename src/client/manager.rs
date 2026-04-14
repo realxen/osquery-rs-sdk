@@ -15,15 +15,23 @@ type TClient = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 type TClient = super::named_pipe::NamedPipeClient;
 
-/// ExtensionManager represents an extension manager, which handles the
+/// `ExtensionManager` represents an extension manager, which handles the
 /// communication with the osquery core process.
 pub trait ExtensionManager: Send {
     /// close closes the transport connection. After close is called,
     /// other methods may return errors.
     fn close(&mut self) {}
     /// ping requests metadata from the extension manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn ping(&mut self) -> TResult<osquery::ExtensionStatus>;
     /// call requests a call to an extension (or core) registry plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn call(
         &mut self,
         registry: String,
@@ -31,29 +39,57 @@ pub trait ExtensionManager: Send {
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse>;
     /// shutdown should be called to close the transport when use of the client is completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn shutdown(&mut self) -> TResult<()>;
     /// extensions requests the list of active registered extensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn extensions(&mut self) -> TResult<osquery::InternalExtensionList>;
     /// options requests the list of bootstrap or configuration options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn options(&mut self) -> TResult<osquery::InternalOptionList>;
-    /// register_extension registers the extension plugins with the osquery process.
+    /// `register_extension` registers the extension plugins with the osquery process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn register_extension(
         &mut self,
         info: osquery::InternalExtensionInfo,
         registry: osquery::ExtensionRegistry,
     ) -> TResult<osquery::ExtensionStatus>;
-    /// deregister_extension de-registers the extension plugins with the osquery process.
+    /// `deregister_extension` de-registers the extension plugins with the osquery process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn deregister_extension(
         &mut self,
         uuid: osquery::ExtensionRouteUUID,
     ) -> TResult<osquery::ExtensionStatus>;
     /// query requests a query to be run and returns the extension response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse>;
-    /// get_query_columns requests the columns returned by the parsed query.
+    /// `get_query_columns` requests the columns returned by the parsed query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying transport or serialization fails.
     fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse>;
 }
 
-/// ExtensionManagerClient is a wrapper for the osquery Thrift extensions API.
+/// `ExtensionManagerClient` is a wrapper for the osquery Thrift extensions API.
 pub struct ExtensionManagerClient {
     client: Box<dyn osquery::TExtensionManagerSyncClient + Send>,
     stream: Option<TClient>,
@@ -81,9 +117,13 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> std::io::Result<()> {
     }
 }
 
-/// ExtensionManagerClient is a wrapper for the osquery Thrift extensions API.
+/// `ExtensionManagerClient` is a wrapper for the osquery Thrift extensions API.
 impl ExtensionManagerClient {
     /// creates a new client communicating to osquery over the default socket path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the default `osqueryd` socket cannot be connected to.
     pub fn new() -> TResult<Self> {
         #[cfg(unix)]
         return Self::new_with_path("/var/osquery/osquery.em");
@@ -93,6 +133,10 @@ impl ExtensionManagerClient {
 
     /// create a new client communicating to osquery over the provided socket path.
     /// The connection is attempted immediately without polling for the socket to exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connecting to the socket at `path` fails.
     pub fn new_with_path<P: AsRef<Path>>(path: P) -> TResult<Self> {
         let stream = TClient::connect(&path)
             .map_err(|e| format!("connecting to {}: {}", path.as_ref().display(), e))?;
@@ -101,6 +145,11 @@ impl ExtensionManagerClient {
 
     /// create a new client communicating to osquery over the provided socket path,
     /// polling for the socket to exist up to `socket_open_timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket does not appear within `socket_open_timeout`
+    /// or if connecting to it fails.
     pub fn new_with_timeout<P: AsRef<Path>>(
         path: P,
         socket_open_timeout: Duration,
@@ -130,6 +179,7 @@ impl ExtensionManagerClient {
     }
 
     /// creates a new client communicating to osquery over the provided transports.
+    #[must_use] 
     pub fn new_with_proto(
         input_protocol: Box<dyn TInputProtocol + Send>,
         output_protocol: Box<dyn TOutputProtocol + Send>,
@@ -157,12 +207,20 @@ impl ExtensionManagerClient {
     }
 
     /// ping requests metadata from the extension manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
         self.client.ping()
     }
 
     /// call requests a call to an extension (or core) registry plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(skip(self, request), fields(registry = %registry, item = %item))
@@ -177,24 +235,40 @@ impl ExtensionManagerClient {
     }
 
     /// shutdown calls the thrift shutdown RPC on the remote end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn shutdown(&mut self) -> TResult<()> {
         self.client.shutdown()
     }
 
     /// extensions requests the list of active registered extensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
         self.client.extensions()
     }
 
     /// options requests the list of bootstrap or configuration options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn options(&mut self) -> TResult<osquery::InternalOptionList> {
         self.client.options()
     }
 
-    /// register_extension registers the extension plugins with the osquery process.
+    /// `register_extension` registers the extension plugins with the osquery process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, info, registry)))]
     pub fn register_extension(
         &mut self,
@@ -204,7 +278,11 @@ impl ExtensionManagerClient {
         self.client.register_extension(info, registry)
     }
 
-    /// deregister_extension de-registers the extension plugins with the osquery process.
+    /// `deregister_extension` de-registers the extension plugins with the osquery process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(skip(self), fields(uuid = uuid))
@@ -217,21 +295,34 @@ impl ExtensionManagerClient {
     }
 
     /// query requests a query to be run and returns the extension response.
-    /// Consider using the query_row or query_rows helpers for a more friendly interface.
+    /// Consider using the `query_row` or `query_rows` helpers for a more friendly interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.client.query(sql)
     }
 
-    /// get_query_columns requests the columns returned by the parsed query.
+    /// `get_query_columns` requests the columns returned by the parsed query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.client.get_query_columns(sql)
     }
 
-    /// query_rows is a helper that executes the requested query and returns the TResults.
-    /// It handles checking both the transport level TErrors and the osquery internal TErrors
-    /// by returning a Thrift TError type.
+    /// `query_rows` is a helper that executes the requested query and returns the `TResults`.
+    /// It handles checking both the transport level `TErrors` and the osquery internal `TErrors`
+    /// by returning a Thrift `TError` type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying Thrift transport fails, if the
+    /// query returns a nil status, or if osquery reports a non-zero status code.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query_rows(&mut self, sql: &str) -> TResult<Vec<BTreeMap<String, String>>> {
         let res = self.client.query(String::from(sql))?;
@@ -249,8 +340,13 @@ impl ExtensionManagerClient {
         }
     }
 
-    /// query_row behaves similarly to query_rows, but it returns an TError if the query
+    /// `query_row` behaves similarly to `query_rows`, but it returns an `TError` if the query
     /// does not return exactly one row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `query_rows` fails or if the result does not
+    /// contain exactly one row.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query_row(&mut self, sql: &str) -> TResult<BTreeMap<String, String>> {
         let res = self.query_rows(sql)?;

@@ -9,6 +9,7 @@ use std::result;
     clippy::all,
     clippy::pedantic,
     clippy::unwrap_used,
+    clippy::expect_used,
     unsafe_code,
     unused
 )]

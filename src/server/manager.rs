@@ -33,7 +33,7 @@ const DEFAULT_PING_INTERVAL: time::Duration = time::Duration::from_secs(5);
 /// See: <https://unix.stackexchange.com/questions/367008/why-is-socket-path-length-limited-to-a-hundred-chars>
 pub const MAX_SOCKET_PATH_CHARACTERS: usize = 97;
 
-/// ServerOption configures an [`ExtensionManagerServer`].
+/// `ServerOption` configures an [`ExtensionManagerServer`].
 #[non_exhaustive]
 pub enum ServerOption {
     /// Set the extension version string reported to osquery.
@@ -83,13 +83,22 @@ impl ExtensionManagerServer {
     /// communicating with osquery over the socket at the provided path. If
     /// resolving the address or connecting to the socket fails, this function will
     /// error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connecting to the `osqueryd` socket at `socket_path` fails.
     pub fn new<P: AsRef<Path>>(name: &str, socket_path: P) -> Result<Self> {
         Self::new_with_opts(name, socket_path, vec![])
     }
 
-    /// new_with_opts creates a new extension management server with the given
+    /// `new_with_opts` creates a new extension management server with the given
     /// options. If resolving the address or connecting to the socket fails,
     /// this function will error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket path exceeds `MAX_SOCKET_PATH_CHARACTERS`
+    /// or if connecting to the `osqueryd` socket fails.
     pub fn new_with_opts<P: AsRef<Path>>(
         name: &str,
         socket_path: P,
@@ -142,11 +151,16 @@ impl ExtensionManagerServer {
     }
 
     /// get extension uuid
+    #[must_use] 
     pub fn uuid(&self) -> Option<osquery::ExtensionRouteUUID> {
         self.uuid
     }
 
-    /// register_plugin adds an `OsqueryPlugin` to this extension manager registry.
+    /// `register_plugin` adds an `OsqueryPlugin` to this extension manager registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned.
     pub fn register_plugin(&mut self, plugin: Box<dyn OsqueryPlugin>) -> Result<()> {
         self.registry
             .lock()
@@ -159,7 +173,11 @@ impl ExtensionManagerServer {
         Ok(())
     }
 
-    /// register_plugins adds multiple [`OsqueryPlugin`]s to this extension manager registry.
+    /// `register_plugins` adds multiple [`OsqueryPlugin`]s to this extension manager registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned.
     pub fn register_plugins(&mut self, plugins: Vec<Box<dyn OsqueryPlugin>>) -> Result<()> {
         for plugin in plugins {
             self.register_plugin(plugin)?;
@@ -186,9 +204,9 @@ impl ExtensionManagerServer {
         Ok(ext_registry)
     }
 
-    /// register_extension registers the extension and plugins.
-    /// All plugins should be registered with register_plugin() before calling register_extension().
-    /// Return the ExtensionRouteUUID
+    /// `register_extension` registers the extension and plugins.
+    /// All plugins should be registered with `register_plugin()` before calling `register_extension()`.
+    /// Return the `ExtensionRouteUUID`
     fn register_extension(&mut self) -> Result<i64> {
         let registry = self.gen_registry()?;
         let response = self
@@ -227,7 +245,7 @@ impl ExtensionManagerServer {
     }
 
     /// start open a new thread and begins listening for requests from the osquery process.
-    /// All plugins should be registered with register_plugin() before calling start().
+    /// All plugins should be registered with `register_plugin()` before calling `start()`.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, shutdown)))]
     fn start(&mut self, shutdown: ShutdownSignal) -> Result<()> {
         // will set the uuid and listen_path for the server
@@ -261,6 +279,10 @@ impl ExtensionManagerServer {
     /// shutdown deregisters the extension, stops the server and closes all sockets.
     /// This method is idempotent: calling it multiple times is safe and will
     /// not return an error on subsequent calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the osquery client lock is poisoned.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn shutdown(&mut self) -> Result<()> {
         let mut client_guard = self
@@ -312,6 +334,11 @@ impl ExtensionManagerServer {
     /// or the osquery instance goes away.
     /// Takes `&mut self` instead of consuming `self` so that external code
     /// (e.g., signal handlers) can call [`shutdown`](Self::shutdown) concurrently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if starting the server fails, if the osquery process
+    /// goes away (ping failure), or if shutdown encounters an error.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(skip(self), fields(name = %self.name))
@@ -363,8 +390,8 @@ impl ExtensionManagerServer {
     }
 }
 
-/// ExtensionServerHandler handles requests to the extension server and is used
-/// as the ExtensionSyncProcessor for the thrift server
+/// `ExtensionServerHandler` handles requests to the extension server and is used
+/// as the `ExtensionSyncProcessor` for the thrift server
 struct ExtensionServerHandler {
     registry: Registry,
     shutdown: ShutdownSignal,

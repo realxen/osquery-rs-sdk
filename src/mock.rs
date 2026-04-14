@@ -6,7 +6,7 @@
 //! osquery-rs-sdk = { version = "0.1", features = ["mock"] }
 //! ```
 //!
-//! # MockExtensionManager
+//! # `MockExtensionManager`
 //!
 //! Implements [`ExtensionManager`](crate::client::ExtensionManager) with injectable
 //! function fields and invocation tracking. Unset functions return sensible defaults.
@@ -126,6 +126,7 @@ pub struct MockExtensionManager {
 
 impl MockExtensionManager {
     /// Creates a new mock with default (success) behavior for all methods.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             close_fn: None,
@@ -168,6 +169,7 @@ fn ok_response() -> osquery::ExtensionResponse {
     osquery::ExtensionResponse::new(ok_status(), None)
 }
 
+#[allow(clippy::expect_used)] // Mutex poisoning in test mocks is a programmer error; panic is correct.
 impl ExtensionManager for MockExtensionManager {
     fn close(&mut self) {
         self.close_invoked = true;
@@ -333,6 +335,7 @@ pub struct MockPlugin {
 #[cfg(feature = "server")]
 impl MockPlugin {
     /// Creates a new mock plugin with the given name and registry.
+    #[must_use] 
     pub fn new(name: &str, registry_name: RegistryName) -> Box<Self> {
         Box::new(Self {
             name: Arc::from(name),

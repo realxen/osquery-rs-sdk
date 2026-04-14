@@ -48,8 +48,8 @@ impl std::str::FromStr for LogType {
     }
 }
 
-/// Osquery logger plugin. That implement the OsqueryPlugin interface
-/// * `LogFunc`: should log the provided result string. The LogType
+/// Osquery logger plugin. That implement the `OsqueryPlugin` interface
+/// * `LogFunc`: should log the provided result string. The `LogType`
 // argument can be optionally used to log differently depending on the
 // type of log received.
 pub struct LoggerPlugin<LogFunc: FnMut(LogType, &str) -> Result<()>> {
@@ -59,7 +59,7 @@ pub struct LoggerPlugin<LogFunc: FnMut(LogType, &str) -> Result<()>> {
 }
 
 impl<LogFunc: FnMut(LogType, &str) -> Result<()>> LoggerPlugin<LogFunc> {
-    /// creates a ConfigPlugin plugin.
+    /// creates a `ConfigPlugin` plugin.
     /// * [`LogFunc`]: should log the provided result string.
     pub fn new(name: &str, log_fn: LogFunc) -> Box<Self> {
         Box::new(Self {
@@ -102,11 +102,9 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
 
                         match serde_json::from_str::<Value>(&status_json) {
                             Err(err) => errors.push(format!("error parsing status logs: {err}")),
-                            Ok(v) if v.is_array() => {
+                            Ok(Value::Array(arr)) => {
                                 let mut errors = Vec::new();
-                                // Safety: v.is_array() guard ensures as_array() returns Some
-                                let arr = v.as_array().expect("guarded by is_array()");
-                                for s in arr {
+                                for s in &arr {
                                     if let Err(err) = (self.log_fn)(LogType::Status, &s.to_string())
                                     {
                                         errors.push(format!("error logging status: {err}"));

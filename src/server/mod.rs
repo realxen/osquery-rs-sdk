@@ -5,7 +5,7 @@ mod manager;
 mod threaded;
 pub use manager::*;
 
-/// RegistryNames contains the allowable registry_name values. If a plugin
+/// `RegistryNames` contains the allowable `registry_name` values. If a plugin
 /// attempts to register with another value, the program will panic.
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -27,7 +27,7 @@ impl fmt::Display for RegistryName {
     }
 }
 
-/// OsqueryPlugin represents an osquery plugin.
+/// `OsqueryPlugin` represents an osquery plugin.
 pub trait OsqueryPlugin: Send + Sync {
     /// Name used to refer to the plugin (eg. the name of the
     /// table the plugin implements).
@@ -43,7 +43,7 @@ pub trait OsqueryPlugin: Send + Sync {
     }
 
     /// Implements a health check for the plugin. If the plugin is in a
-    /// healthy state, StatusOK should be returned.
+    /// healthy state, `StatusOK` should be returned.
     fn ping(&mut self) -> osquery::ExtensionStatus {
         osquery::ExtensionStatus::new(0, "OK".to_string(), None)
     }

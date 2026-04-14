@@ -1,6 +1,6 @@
 //! Create an osquery distributed plugin.
 //!
-//! See https://osquery.readthedocs.io/en/latest/development/config-plugins/ for more.
+//! See <https://osquery.readthedocs.io/en/latest/development/config-plugins>/ for more.
 use crate::{osquery, OsqueryPlugin, RegistryName, Result};
 use serde::{
     de::{self, IntoDeserializer},
@@ -32,6 +32,7 @@ pub struct QueriesRequest {
 }
 
 impl QueriesRequest {
+    #[must_use] 
     pub fn new(queries: BTreeMap<String, String>) -> Self {
         Self {
             queries,
@@ -190,7 +191,7 @@ impl TryFrom<QueriesResponse> for Vec<QueryResponse> {
     }
 }
 
-/// Osquery distributed plugin. Implements the OsqueryPlugin interface.
+/// Osquery distributed plugin. Implements the `OsqueryPlugin` interface.
 pub struct DistributedPlugin<GetFunc, WriteFunc>
 where
     GetFunc: FnMut() -> Result<QueriesRequest>,

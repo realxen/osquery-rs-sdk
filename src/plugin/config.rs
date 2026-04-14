@@ -1,6 +1,6 @@
 //! Create an osquery configuration plugin.
 //!
-//! See https://osquery.readthedocs.io/en/latest/development/config-plugins/ for more.
+//! See <https://osquery.readthedocs.io/en/latest/development/config-plugins>/ for more.
 use crate::{osquery, OsqueryPlugin, RegistryName, Result};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// A map that should use the source name as key, and the config JSON as values.
 type Config = BTreeMap<String, String>;
 
-/// Osquery configuration plugin. That implement the OsqueryPlugin interface
+/// Osquery configuration plugin. That implement the `OsqueryPlugin` interface
 /// * [`GenFunc`]: returns a map that should use the source name as key, and the config
 ///   JSON as values.
 pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
@@ -18,7 +18,7 @@ pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
 }
 
 impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
-    /// creates a ConfigPlugin plugin.
+    /// creates a `ConfigPlugin` plugin.
     /// * [`GenFunc`]: should return a [`Result<BTreeMap<String, String>>`]
     ///   that uses the source name as key, and the config JSON as values.
     pub fn new(name: &str, generate: GenFunc) -> Box<Self> {
