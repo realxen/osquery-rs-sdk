@@ -11,6 +11,7 @@ use thrift::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     runtime::Runtime,
+    sync::watch,
 };
 
 #[cfg(windows)]
@@ -18,20 +19,52 @@ use tokio::net::windows::named_pipe::ServerOptions;
 #[cfg(unix)]
 use tokio::net::UnixListener;
 
+/// A handle that can be used to stop a running [`ExtensionServer`].
+///
+/// Dropping the handle or calling [`stop`](StopHandle::stop) signals the
+/// server's accept loop to exit. The server listener thread will finish
+/// after completing any in-flight request.
+#[derive(Clone)]
+pub struct StopHandle {
+    sender: watch::Sender<bool>,
+}
+
+impl StopHandle {
+    /// Signal the server to stop accepting new connections and exit.
+    pub fn stop(&self) {
+        let _ = self.sender.send(true);
+    }
+}
+
 pub struct ExtensionServer<PRC: TProcessor + Send + Sync + 'static> {
     processor: Arc<PRC>,
     runtime: Runtime,
+    stop_rx: watch::Receiver<bool>,
+    stop_tx: watch::Sender<bool>,
 }
 
 impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
     /// Create a new almost-asynchronous server, from a synchronous request `TProcessor`.
     /// Input/Output protocol **must** be binary.
     pub fn new(processor: PRC) -> io::Result<ExtensionServer<PRC>> {
+        let (stop_tx, stop_rx) = watch::channel(false);
         Ok(ExtensionServer {
             processor: Arc::new(processor),
             runtime: Runtime::new()?,
+            stop_rx,
+            stop_tx,
         })
     }
+
+    /// Returns a [`StopHandle`] that can be used to stop the server from
+    /// another thread. Calling [`StopHandle::stop`] will cause the accept
+    /// loop in [`listen`](ExtensionServer::listen) to exit.
+    pub fn stop_handle(&self) -> StopHandle {
+        StopHandle {
+            sender: self.stop_tx.clone(),
+        }
+    }
+
     /// Listen for incoming connections on a `listen_path`.
     pub fn listen<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
         #[cfg(unix)]
@@ -42,48 +75,58 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
 
     #[cfg(windows)]
     fn listen_pipe<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
+        let mut stop_rx = self.stop_rx.clone();
         self.runtime.block_on(async {
             let pipe_name = path.as_ref();
             let mut server = ServerOptions::new()
                 .first_pipe_instance(true)
                 .create(path.as_ref())?;
             loop {
-                match server.connect().await {
-                    Ok(_) => {
-                        // Rotate to a fresh pipe instance before handing the connected one to a task.
-                        self.handle_connection(std::mem::replace(
-                            &mut server,
-                            ServerOptions::new().create(pipe_name)?,
-                        ))?;
+                tokio::select! {
+                    result = server.connect() => {
+                        match result {
+                            Ok(_) => {
+                                // Rotate to a fresh pipe instance before handing the connected one to a task.
+                                self.handle_connection(std::mem::replace(
+                                    &mut server,
+                                    ServerOptions::new().create(pipe_name)?,
+                                ))?;
+                            }
+                            Err(e) => {
+                                break eprintln!("failed to accept remote connection with error {:?}", e)
+                            }
+                        }
                     }
-                    Err(e) => {
-                        break eprintln!("failed to accept remote connection with error {:?}", e)
+                    _ = stop_rx.changed() => {
+                        break;
                     }
                 }
             }
-            Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "aborted listen loop",
-            ))
+            Ok(())
         })
     }
 
     #[cfg(unix)]
     fn listen_uds<P: AsRef<Path>>(&mut self, socket_path: P) -> io::Result<()> {
+        let mut stop_rx = self.stop_rx.clone();
         self.runtime.block_on(async {
             let listener = UnixListener::bind(socket_path)?;
             loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => self.handle_connection(stream)?,
-                    Err(e) => {
-                        break eprintln!("failed to accept remote connection with error {:?}", e)
+                tokio::select! {
+                    result = listener.accept() => {
+                        match result {
+                            Ok((stream, _)) => self.handle_connection(stream)?,
+                            Err(e) => {
+                                break eprintln!("failed to accept remote connection with error {:?}", e)
+                            }
+                        }
+                    }
+                    _ = stop_rx.changed() => {
+                        break;
                     }
                 }
             }
-            Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "aborted listen loop",
-            ))
+            Ok(())
         })
     }
 
@@ -143,7 +186,7 @@ mod tests {
     use std::path::PathBuf;
 
     // Use a unique socket per test case to avoid cross-test interference.
-    fn init_server(name: &str) -> PathBuf {
+    fn init_server(name: &str) -> (PathBuf, StopHandle) {
         #[cfg(unix)]
         let socket: PathBuf = format!("/tmp/osquery_rs_sdk.server.{}.test.em", name).into();
         #[cfg(windows)]
@@ -154,6 +197,7 @@ mod tests {
         let handler = MockExtensionServerHandler {};
         let processor = osquery::ExtensionSyncProcessor::new(handler);
         let mut server = ExtensionServer::new(processor).unwrap();
+        let stop_handle = server.stop_handle();
 
         let socket_path = socket.clone();
         std::thread::spawn(move || {
@@ -161,12 +205,12 @@ mod tests {
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        socket
+        (socket, stop_handle)
     }
 
     #[test]
     fn client_ping() {
-        let test_socket = init_server("client_ping_me");
+        let (test_socket, _stop) = init_server("client_ping_me");
         let mut client = client::ExtensionManagerClient::new_with_path(test_socket).unwrap();
         client.ping().unwrap();
     }
@@ -192,7 +236,7 @@ mod tests {
 
     #[test]
     fn processor() {
-        let test_socket = init_server("processor");
+        let (test_socket, _stop) = init_server("processor");
         let (tx, rx) = std::sync::mpsc::channel();
         let mut children = Vec::new();
 
@@ -216,5 +260,24 @@ mod tests {
         for _ in 0..NTHREADS {
             rx.recv().unwrap();
         }
+    }
+
+    #[test]
+    fn stop_handle_stops_server() {
+        let (test_socket, stop) = init_server("stop_handle");
+
+        // Verify the server is running
+        let mut client = client::ExtensionManagerClient::new_with_path(&test_socket).unwrap();
+        client.ping().unwrap();
+
+        // Stop the server
+        stop.stop();
+
+        // Give the server time to shut down
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // New connections should fail
+        let result = client::ExtensionManagerClient::new_with_path(&test_socket);
+        assert!(result.is_err(), "should not connect after stop");
     }
 }

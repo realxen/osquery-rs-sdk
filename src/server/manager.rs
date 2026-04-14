@@ -1,4 +1,7 @@
-use super::{threaded::ExtensionServer, OsqueryPlugin};
+use super::{
+    threaded::{ExtensionServer, StopHandle},
+    OsqueryPlugin,
+};
 use crate::{client, osquery, Error, Result};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -51,12 +54,13 @@ pub enum ServerOption {
 pub struct ExtensionManagerServer {
     name: String,
     version: Option<String>,
-    osquery_client: Arc<Mutex<Box<dyn client::ExtensionManager>>>,
+    osquery_client: Arc<Mutex<Option<Box<dyn client::ExtensionManager>>>>,
     server_client_should_shutdown: bool,
     registry: Registry,
     socket_path: PathBuf,
     listen_path: Option<PathBuf>,
-    uuid: Arc<Option<osquery::ExtensionRouteUUID>>,
+    uuid: Option<osquery::ExtensionRouteUUID>,
+    server_stop_handle: Option<StopHandle>,
     #[allow(dead_code)] // Stored for forward-compatibility with transport-layer timeouts.
     timeout: time::Duration,
     ping_interval: time::Duration, // How often to ping osquery server
@@ -117,9 +121,10 @@ impl ExtensionManagerServer {
             name: name.to_string(),
             registry: Arc::from(Mutex::new(BTreeMap::new())),
             socket_path: path.to_path_buf(),
-            osquery_client: Arc::from(Mutex::new(osquery_client)),
+            osquery_client: Arc::from(Mutex::new(Some(osquery_client))),
             server_client_should_shutdown,
-            uuid: Arc::from(None),
+            uuid: None,
+            server_stop_handle: None,
             version,
             listen_path: None,
             timeout,
@@ -129,7 +134,7 @@ impl ExtensionManagerServer {
 
     /// get extension uuid
     pub fn uuid(&self) -> Option<osquery::ExtensionRouteUUID> {
-        *self.uuid
+        self.uuid
     }
 
     /// register_plugin adds an `OsqueryPlugin` to this extension manager registry.
@@ -177,10 +182,12 @@ impl ExtensionManagerServer {
     /// Return the ExtensionRouteUUID
     fn register_extension(&mut self) -> Result<i64> {
         let registry = self.gen_registry()?;
-        let stat = self
+        let response = self
             .osquery_client
             .try_lock()
             .map_err(|_| "thread lock error for server_client on start")?
+            .as_mut()
+            .ok_or("cannot start, shutdown in progress")?
             .register_extension(
                 osquery::InternalExtensionInfo::new(
                     self.name.clone(),
@@ -189,16 +196,25 @@ impl ExtensionManagerServer {
                     None,
                 ),
                 registry,
-            );
+            )?;
 
-        // registering extension
-        self.uuid = match stat {
-            Ok(response) => Arc::from(response.uuid),
-            Err(err) => return Err(err.into()),
-        };
+        // Check the registration status code (matching Go's server.go:216-218)
+        let code = response.code.unwrap_or_default();
+        if code != 0 {
+            return Err(format!(
+                "status {} registering extension: {}",
+                code,
+                response.message.unwrap_or_default()
+            )
+            .into());
+        }
+
+        self.uuid = response.uuid;
 
         let mut listen_path = self.socket_path.clone();
-        self.listen_path = match listen_path.set_extension(format!("em.{}", self.uuid.unwrap())) {
+        self.listen_path = match listen_path
+            .set_extension(format!("em.{}", self.uuid.ok_or("uuid returned nil")?))
+        {
             true => Some(listen_path),
             false => return Err("socket_path is not valid file".into()),
         };
@@ -224,6 +240,9 @@ impl ExtensionManagerServer {
         let processor = osquery::ExtensionSyncProcessor::new(handler);
         let mut server = ExtensionServer::new(processor)?;
 
+        // Store the stop handle so shutdown() can stop the listener
+        self.server_stop_handle = Some(server.stop_handle());
+
         std::thread::spawn(move || {
             // start listen for connections
             if let Err(err) = server.listen(&listen_path) {
@@ -235,37 +254,64 @@ impl ExtensionManagerServer {
     }
 
     /// shutdown deregisters the extension, stops the server and closes all sockets.
+    /// This method is idempotent: calling it multiple times is safe and will
+    /// not return an error on subsequent calls.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
-    fn shutdown(&mut self) -> Result<()> {
-        let uuid = self.uuid.ok_or_else(|| "uuid returned nil")?;
-        let mut client = self
+    pub fn shutdown(&mut self) -> Result<()> {
+        let mut client_guard = self
             .osquery_client
             .try_lock()
             .map_err(|_| "could not lock osquery client error")?;
 
-        match client.deregister_extension(uuid) {
-            Err(err) => Err(Error::from(err).message(&format!("deregistering extension {}", uuid))),
-            Ok(res) if res.code.unwrap_or_default() != 0 => Err(format!(
-                "status {} deregistering extension: {}",
-                res.code.unwrap_or_default(),
-                res.message.unwrap_or_default()
-            )
-            .into()),
-            Ok(_) if self.server_client_should_shutdown => {
-                client.close();
-                Ok(())
+        // Deregister the extension if we have a client and uuid
+        if let Some(client) = client_guard.as_mut() {
+            if let Some(uuid) = self.uuid {
+                match client.deregister_extension(uuid) {
+                    Err(err) => {
+                        // Log but don't fail -- we still want to stop the server
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!("error deregistering extension {}: {}", uuid, err);
+                        let _ =
+                            Error::from(err).message(&format!("deregistering extension {}", uuid));
+                    }
+                    Ok(res) if res.code.unwrap_or_default() != 0 => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(
+                            "status {} deregistering extension: {}",
+                            res.code.unwrap_or_default(),
+                            res.message.as_deref().unwrap_or_default()
+                        );
+                    }
+                    Ok(_) => {}
+                }
             }
-            Ok(_) => Ok(()),
         }
+
+        // Stop the thrift server asynchronously (matching Go's server.go:341-351)
+        if let Some(stop_handle) = self.server_stop_handle.take() {
+            stop_handle.stop();
+        }
+
+        // Shutdown the client, if appropriate (matching Go's server.go:353-357)
+        if self.server_client_should_shutdown {
+            if let Some(client) = client_guard.as_mut() {
+                client.close();
+            }
+            *client_guard = None;
+        }
+
+        Ok(())
     }
 
     /// run starts the extension manager until osquery calls for a shutdown
     /// or the osquery instance goes away.
+    /// Takes `&mut self` instead of consuming `self` so that external code
+    /// (e.g., signal handlers) can call [`shutdown`](Self::shutdown) concurrently.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(skip(self), fields(name = %self.name))
     )]
-    pub fn run(mut self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let ping_interval = self.ping_interval;
         let osquery_client = self.osquery_client.clone();
@@ -275,14 +321,28 @@ impl ExtensionManagerServer {
         // Watch for the osquery process going away. If so, initiate shutdown.
         std::thread::spawn(move || loop {
             std::thread::sleep(ping_interval);
+
             match osquery_client.lock() {
-                Ok(mut client) => {
-                    if let Err(e) = client.ping() {
-                        let msg = Error::from(e).message("extension ping failed");
-                        tx.send(Some(msg)).ok();
-                        break;
-                    }
-                }
+                Ok(mut guard) => match guard.as_mut() {
+                    // Client was set to None by shutdown -- exit the ping loop
+                    None => break,
+                    Some(client) => match client.ping() {
+                        Err(e) => {
+                            let msg = Error::from(e).message("extension ping failed");
+                            tx.send(Some(msg)).ok();
+                            break;
+                        }
+                        Ok(status) if status.code.unwrap_or_default() != 0 => {
+                            tx.send(Some(Error::from(format!(
+                                "ping returned status {}",
+                                status.code.unwrap_or_default()
+                            ))))
+                            .ok();
+                            break;
+                        }
+                        Ok(_) => {}
+                    },
+                },
                 Err(_) => {
                     tx.send(Some(Error::from("could not lock osquery client for ping")))
                         .ok();
@@ -458,18 +518,6 @@ mod tests {
         )
     }
 
-    // TODO: Once osqueryd mock is implemented then unit test run
-    // #[test]
-    // fn run() {
-    //     let mut server = ExtensionManagerServer::new(
-    //         String::from("test_server"),
-    //         String::from("/var/osquery/osquery.em"),
-    //     )
-    //     .unwrap();
-    //     server.ping_interval = std::time::Duration::from_secs(1);
-    //     assert!(server.run().is_err(), "should fail if osqueryd is killed");
-    // }
-
     #[test]
     #[ignore = "requires a running osqueryd extension socket"]
     #[serial]
@@ -487,11 +535,13 @@ mod tests {
     fn shutdown() {
         let mut server = init_server();
         let (tx, _) = std::sync::mpsc::sync_channel(1);
-        let uuid = std::mem::replace(&mut server.uuid, Arc::new(None));
 
-        assert!(server.shutdown().is_err(), "should error with uuid nil");
+        // Shutdown without uuid should succeed (idempotent -- no uuid means nothing to deregister)
+        assert!(
+            server.shutdown().is_ok(),
+            "shutdown without uuid should succeed (idempotent)"
+        );
 
-        server.uuid = uuid;
         server.start(tx).unwrap();
 
         let listen_path = server.listen_path.clone().unwrap();
@@ -501,6 +551,14 @@ mod tests {
         assert!(
             shutdown_err.is_none(),
             "shutdown should be ok: {:?}",
+            shutdown_err
+        );
+
+        // Second shutdown should also succeed (idempotent)
+        let shutdown_err = server.shutdown().err();
+        assert!(
+            shutdown_err.is_none(),
+            "second shutdown should be ok (idempotent): {:?}",
             shutdown_err
         );
     }
