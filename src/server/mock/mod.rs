@@ -4,21 +4,21 @@ use std::sync::Arc;
 pub const STATUS_CODE: i32 = 9999;
 
 pub struct MockPlugin {
-    name: Arc<String>,
+    name: Arc<str>,
     rname: RegistryName,
 }
 
 impl MockPlugin {
     pub fn new(name: &str, rname: RegistryName) -> Box<Self> {
         Box::new(Self {
-            name: Arc::from(name.to_string()),
+            name: Arc::from(name),
             rname,
         })
     }
 }
 
 impl OsqueryPlugin for MockPlugin {
-    fn name(&self) -> Arc<String> {
+    fn name(&self) -> Arc<str> {
         Arc::clone(&self.name)
     }
 

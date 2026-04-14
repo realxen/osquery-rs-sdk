@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::{fmt, str::FromStr, sync::Arc};
 
 // encodes the type of log osquery is outputting.
+#[non_exhaustive]
 #[derive(PartialEq, Debug)]
 pub enum LogType {
     Health,
@@ -52,7 +53,7 @@ impl std::str::FromStr for LogType {
 // argument can be optionally used to log differently depending on the
 // type of log received.
 pub struct LoggerPlugin<LogFunc: FnMut(LogType, &str) -> Result<()>> {
-    name: Arc<String>,
+    name: Arc<str>,
     registry: RegistryName,
     log_fn: LogFunc,
 }
@@ -62,7 +63,7 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()>> LoggerPlugin<LogFunc> {
     /// * [`LogFunc`]: should log the provided result string.
     pub fn new(name: &str, log_fn: LogFunc) -> Box<Self> {
         Box::new(Self {
-            name: Arc::from(name.to_string()),
+            name: Arc::from(name),
             registry: RegistryName::Logger,
             log_fn,
         })
@@ -72,7 +73,7 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()>> LoggerPlugin<LogFunc> {
 impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
     for LoggerPlugin<LogFunc>
 {
-    fn name(&self) -> std::sync::Arc<String> {
+    fn name(&self) -> std::sync::Arc<str> {
         Arc::clone(&self.name)
     }
 
@@ -88,7 +89,7 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
         let mut errors = Vec::new();
         for (typ, log) in &req {
             match LogType::from_str(typ) {
-                Err(_) => errors.push(format!("cannot log request type: {}", typ)),
+                Err(_) => errors.push(format!("cannot log request type: {typ}")),
                 Ok(LogType::Status) => match req.get("log") {
                     Some(data) if data.is_empty() => errors.push(String::from("got empty status")),
                     Some(data) => {
@@ -100,13 +101,15 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
                         }
 
                         match serde_json::from_str::<Value>(&status_json) {
-                            Err(err) => errors.push(format!("error parsing status logs: {}", err)),
+                            Err(err) => errors.push(format!("error parsing status logs: {err}")),
                             Ok(v) if v.is_array() => {
                                 let mut errors = Vec::new();
-                                for s in v.as_array().unwrap() {
+                                // Safety: v.is_array() guard ensures as_array() returns Some
+                                let arr = v.as_array().expect("guarded by is_array()");
+                                for s in arr {
                                     if let Err(err) = (self.log_fn)(LogType::Status, &s.to_string())
                                     {
-                                        errors.push(format!("error logging status: {}", err));
+                                        errors.push(format!("error logging status: {err}"));
                                     }
                                 }
                             }
@@ -118,10 +121,10 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
                 Ok(LogType::Log | LogType::Unknown) => {}
                 Ok(ltype) => {
                     if let Err(err) = (self.log_fn)(ltype, log) {
-                        errors.push(format!("{} for type: {}", err, typ));
+                        errors.push(format!("{err} for type: {typ}"));
                     }
                 }
-            };
+            }
         }
 
         if !errors.is_empty() {
@@ -176,7 +179,7 @@ mod tests {
             Ok(())
         });
 
-        assert_eq!(plugin.name().as_str(), "mock");
+        assert_eq!(&*plugin.name(), "mock");
         assert_eq!(*plugin.registry_name(), RegistryName::Logger);
 
         let res = plugin.call(osquery::ExtensionPluginRequest::from([

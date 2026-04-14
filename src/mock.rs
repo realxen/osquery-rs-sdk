@@ -21,11 +21,16 @@
 //! ```
 
 use crate::{client::ExtensionManager, osquery};
+use std::sync::Mutex;
 use thrift::Result as TResult;
 
 // ---------------------------------------------------------------------------
 // Type aliases for mock function fields
 // ---------------------------------------------------------------------------
+
+type CloseFn = Box<dyn FnMut() + Send>;
+
+type PingFn = Box<dyn FnMut() -> TResult<osquery::ExtensionStatus> + Send>;
 
 type CallFn = Box<
     dyn FnMut(
@@ -36,6 +41,12 @@ type CallFn = Box<
         + Send,
 >;
 
+type ShutdownMockFn = Box<dyn FnMut() -> TResult<()> + Send>;
+
+type ExtensionsFn = Box<dyn FnMut() -> TResult<osquery::InternalExtensionList> + Send>;
+
+type OptionsFn = Box<dyn FnMut() -> TResult<osquery::InternalOptionList> + Send>;
+
 type RegisterExtensionFn = Box<
     dyn FnMut(
             osquery::InternalExtensionInfo,
@@ -43,6 +54,11 @@ type RegisterExtensionFn = Box<
         ) -> TResult<osquery::ExtensionStatus>
         + Send,
 >;
+
+type DeregisterExtensionFn =
+    Box<dyn FnMut(osquery::ExtensionRouteUUID) -> TResult<osquery::ExtensionStatus> + Send>;
+
+type QueryFn = Box<dyn FnMut(String) -> TResult<osquery::ExtensionResponse> + Send>;
 
 // ---------------------------------------------------------------------------
 // MockExtensionManager
@@ -58,64 +74,55 @@ type RegisterExtensionFn = Box<
 /// empty responses). Set a `*_fn` field to inject custom behavior.
 pub struct MockExtensionManager {
     /// Override for [`ExtensionManager::close`]. Default: no-op.
-    pub close_fn: Option<Box<dyn FnMut() + Send>>,
+    pub close_fn: Option<Mutex<CloseFn>>,
     /// Whether `close` was called.
     pub close_invoked: bool,
 
     /// Override for [`ExtensionManager::ping`]. Default: returns OK status.
-    pub ping_fn: Option<Box<dyn FnMut() -> TResult<osquery::ExtensionStatus> + Send>>,
+    pub ping_fn: Option<Mutex<PingFn>>,
     /// Whether `ping` was called.
     pub ping_invoked: bool,
 
     /// Override for [`ExtensionManager::call`]. Default: returns OK with empty response.
-    pub call_fn: Option<CallFn>,
+    pub call_fn: Option<Mutex<CallFn>>,
     /// Whether `call` was called.
     pub call_invoked: bool,
 
     /// Override for [`ExtensionManager::shutdown`]. Default: returns Ok(()).
-    pub shutdown_fn: Option<Box<dyn FnMut() -> TResult<()> + Send>>,
+    pub shutdown_fn: Option<Mutex<ShutdownMockFn>>,
     /// Whether `shutdown` was called.
     pub shutdown_invoked: bool,
 
     /// Override for [`ExtensionManager::extensions`]. Default: returns empty list.
-    pub extensions_fn: Option<Box<dyn FnMut() -> TResult<osquery::InternalExtensionList> + Send>>,
+    pub extensions_fn: Option<Mutex<ExtensionsFn>>,
     /// Whether `extensions` was called.
     pub extensions_invoked: bool,
 
     /// Override for [`ExtensionManager::options`]. Default: returns empty list.
-    pub options_fn: Option<Box<dyn FnMut() -> TResult<osquery::InternalOptionList> + Send>>,
+    pub options_fn: Option<Mutex<OptionsFn>>,
     /// Whether `options` was called.
     pub options_invoked: bool,
 
     /// Override for [`ExtensionManager::register_extension`]. Default: returns OK status with UUID 1.
-    pub register_extension_fn: Option<RegisterExtensionFn>,
+    pub register_extension_fn: Option<Mutex<RegisterExtensionFn>>,
     /// Whether `register_extension` was called.
     pub register_extension_invoked: bool,
 
     /// Override for [`ExtensionManager::deregister_extension`]. Default: returns OK status.
-    pub deregister_extension_fn: Option<
-        Box<dyn FnMut(osquery::ExtensionRouteUUID) -> TResult<osquery::ExtensionStatus> + Send>,
-    >,
+    pub deregister_extension_fn: Option<Mutex<DeregisterExtensionFn>>,
     /// Whether `deregister_extension` was called.
     pub deregister_extension_invoked: bool,
 
     /// Override for [`ExtensionManager::query`]. Default: returns OK with empty response.
-    pub query_fn: Option<Box<dyn FnMut(String) -> TResult<osquery::ExtensionResponse> + Send>>,
+    pub query_fn: Option<Mutex<QueryFn>>,
     /// Whether `query` was called.
     pub query_invoked: bool,
 
     /// Override for [`ExtensionManager::get_query_columns`]. Default: returns OK with empty response.
-    pub get_query_columns_fn:
-        Option<Box<dyn FnMut(String) -> TResult<osquery::ExtensionResponse> + Send>>,
+    pub get_query_columns_fn: Option<Mutex<QueryFn>>,
     /// Whether `get_query_columns` was called.
     pub get_query_columns_invoked: bool,
 }
-
-// SAFETY: All methods of `ExtensionManager` require `&mut self`, guaranteeing
-// exclusive access. `MockExtensionManager` is intended to be used behind
-// `Arc<Mutex<...>>` (as `ExtensionManagerServer` does internally), so concurrent
-// access is always externally synchronized.
-unsafe impl Sync for MockExtensionManager {}
 
 impl MockExtensionManager {
     /// Creates a new mock with default (success) behavior for all methods.
@@ -164,15 +171,19 @@ fn ok_response() -> osquery::ExtensionResponse {
 impl ExtensionManager for MockExtensionManager {
     fn close(&mut self) {
         self.close_invoked = true;
-        if let Some(f) = &mut self.close_fn {
-            f();
+        if let Some(f) = &self.close_fn {
+            let mut guard = f.lock().expect("mock fn lock poisoned");
+            guard();
         }
     }
 
     fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
         self.ping_invoked = true;
-        match &mut self.ping_fn {
-            Some(f) => f(),
+        match &self.ping_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard()
+            }
             None => Ok(ok_status()),
         }
     }
@@ -184,32 +195,44 @@ impl ExtensionManager for MockExtensionManager {
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse> {
         self.call_invoked = true;
-        match &mut self.call_fn {
-            Some(f) => f(registry, item, request),
+        match &self.call_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard(registry, item, request)
+            }
             None => Ok(ok_response()),
         }
     }
 
     fn shutdown(&mut self) -> TResult<()> {
         self.shutdown_invoked = true;
-        match &mut self.shutdown_fn {
-            Some(f) => f(),
+        match &self.shutdown_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard()
+            }
             None => Ok(()),
         }
     }
 
     fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
         self.extensions_invoked = true;
-        match &mut self.extensions_fn {
-            Some(f) => f(),
+        match &self.extensions_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard()
+            }
             None => Ok(osquery::InternalExtensionList::new()),
         }
     }
 
     fn options(&mut self) -> TResult<osquery::InternalOptionList> {
         self.options_invoked = true;
-        match &mut self.options_fn {
-            Some(f) => f(),
+        match &self.options_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard()
+            }
             None => Ok(osquery::InternalOptionList::new()),
         }
     }
@@ -220,8 +243,11 @@ impl ExtensionManager for MockExtensionManager {
         registry: osquery::ExtensionRegistry,
     ) -> TResult<osquery::ExtensionStatus> {
         self.register_extension_invoked = true;
-        match &mut self.register_extension_fn {
-            Some(f) => f(info, registry),
+        match &self.register_extension_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard(info, registry)
+            }
             None => Ok(osquery::ExtensionStatus::new(0, "OK".to_string(), Some(1))),
         }
     }
@@ -231,24 +257,33 @@ impl ExtensionManager for MockExtensionManager {
         uuid: osquery::ExtensionRouteUUID,
     ) -> TResult<osquery::ExtensionStatus> {
         self.deregister_extension_invoked = true;
-        match &mut self.deregister_extension_fn {
-            Some(f) => f(uuid),
+        match &self.deregister_extension_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard(uuid)
+            }
             None => Ok(ok_status()),
         }
     }
 
     fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.query_invoked = true;
-        match &mut self.query_fn {
-            Some(f) => f(sql),
+        match &self.query_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard(sql)
+            }
             None => Ok(ok_response()),
         }
     }
 
     fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.get_query_columns_invoked = true;
-        match &mut self.get_query_columns_fn {
-            Some(f) => f(sql),
+        match &self.get_query_columns_fn {
+            Some(f) => {
+                let mut guard = f.lock().expect("mock fn lock poisoned");
+                guard(sql)
+            }
             None => Ok(ok_response()),
         }
     }
@@ -269,7 +304,7 @@ use std::sync::Arc;
 /// By default, `call` returns an empty response with status code 0.
 #[cfg(feature = "server")]
 pub struct MockPlugin {
-    name: Arc<String>,
+    name: Arc<str>,
     registry_name: RegistryName,
 
     /// Override for [`OsqueryPlugin::call`]. Default: returns OK with empty response.
@@ -300,7 +335,7 @@ impl MockPlugin {
     /// Creates a new mock plugin with the given name and registry.
     pub fn new(name: &str, registry_name: RegistryName) -> Box<Self> {
         Box::new(Self {
-            name: Arc::from(name.to_string()),
+            name: Arc::from(name),
             registry_name,
             call_fn: None,
             call_invoked: false,
@@ -316,7 +351,7 @@ impl MockPlugin {
 
 #[cfg(feature = "server")]
 impl OsqueryPlugin for MockPlugin {
-    fn name(&self) -> Arc<String> {
+    fn name(&self) -> Arc<str> {
         Arc::clone(&self.name)
     }
 
@@ -405,13 +440,13 @@ mod tests {
     #[test]
     fn mock_extension_manager_custom_fns() {
         let mut mock = MockExtensionManager::new();
-        mock.ping_fn = Some(Box::new(|| {
+        mock.ping_fn = Some(Mutex::new(Box::new(|| {
             Ok(osquery::ExtensionStatus::new(
                 1,
                 "custom error".to_string(),
                 None,
             ))
-        }));
+        })));
 
         let status = mock.ping().unwrap();
         assert_eq!(status.code.unwrap(), 1);
@@ -422,7 +457,7 @@ mod tests {
     #[test]
     fn mock_extension_manager_query() {
         let mut mock = MockExtensionManager::new();
-        mock.query_fn = Some(Box::new(|sql| {
+        mock.query_fn = Some(Mutex::new(Box::new(|sql| {
             assert_eq!(sql, "SELECT 1");
             Ok(osquery::ExtensionResponse::new(
                 osquery::ExtensionStatus::new(0, "OK".to_string(), None),
@@ -431,7 +466,7 @@ mod tests {
                     "1".to_string(),
                 )])]),
             ))
-        }));
+        })));
 
         let resp = mock.query("SELECT 1".to_string()).unwrap();
         assert!(mock.query_invoked);
@@ -455,7 +490,7 @@ mod tests {
         fn mock_plugin_defaults() {
             let mut plugin = MockPlugin::new("test_table", RegistryName::Table);
 
-            assert_eq!(plugin.name().as_str(), "test_table");
+            assert_eq!(&*plugin.name(), "test_table");
             assert_eq!(*plugin.registry_name(), RegistryName::Table);
 
             // Call returns OK by default

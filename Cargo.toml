@@ -10,8 +10,8 @@ homepage = "https://github.com/realxen/osquery-rs-sdk"
 documentation = "https://docs.rs/osquery-rs-sdk"
 keywords = ["osquery", "security", "extensions", "thrift"]
 categories = ["api-bindings", "development-tools"]
-edition = "2021"
-rust-version = "1.71.0"
+edition = "2024"
+rust-version = "1.85.0"
 exclude = [
     ".devcontainer/**",
 ]
@@ -20,6 +20,7 @@ exclude = [
 
 [dependencies]
 thrift = "0.17.0"
+thiserror = "2"
 tokio = { version = "1.19", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
@@ -67,3 +68,28 @@ required-features = ["plugins"]
 
 [dev-dependencies]
 serial_test = "3"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Selective overrides for pedantic lints that are too noisy for this crate
+module_name_repetitions = "allow"
+struct_excessive_bools = "allow"  # ColumnDefinition has 5 boolean flags by design (index, required, additional, optimized, hidden)
+# Restriction lints (not in pedantic, opted in explicitly)
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev.package."*"]
+opt-level = 2

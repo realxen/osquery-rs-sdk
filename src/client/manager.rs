@@ -2,7 +2,6 @@ use crate::osquery;
 use std::{
     collections::BTreeMap,
     path::Path,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use thrift::{
@@ -16,25 +15,9 @@ type TClient = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 type TClient = super::named_pipe::NamedPipeClient;
 
-/// Default wait time for acquiring the client lock.
-const DEFAULT_WAIT_TIME: Duration = Duration::from_millis(200);
-
-/// Maximum wait time for acquiring the client lock.
-const DEFAULT_MAX_WAIT_TIME: Duration = Duration::from_secs(60);
-
-/// ClientOption configures an [`ExtensionManagerClient`].
-pub enum ClientOption {
-    /// Set the default wait time for acquiring the client lock.
-    /// Used when no explicit timeout is provided (default: 200ms).
-    DefaultWaitTime(Duration),
-    /// Set the maximum wait time for acquiring the client lock (default: 60s).
-    /// Takes precedence over context deadlines when context propagation is added.
-    MaxWaitTime(Duration),
-}
-
 /// ExtensionManager represents an extension manager, which handles the
 /// communication with the osquery core process.
-pub trait ExtensionManager: Send + Sync {
+pub trait ExtensionManager: Send {
     /// close closes the transport connection. After close is called,
     /// other methods may return errors.
     fn close(&mut self) {}
@@ -72,10 +55,8 @@ pub trait ExtensionManager: Send + Sync {
 
 /// ExtensionManagerClient is a wrapper for the osquery Thrift extensions API.
 pub struct ExtensionManagerClient {
-    client: Arc<Mutex<dyn osquery::TExtensionManagerSyncClient + Send + Sync>>,
+    client: Box<dyn osquery::TExtensionManagerSyncClient + Send>,
     stream: Option<TClient>,
-    wait_time: Duration,
-    max_wait_time: Duration,
 }
 
 /// Polls for the socket file to exist, checking every 200ms until the
@@ -119,94 +100,46 @@ impl ExtensionManagerClient {
     }
 
     /// create a new client communicating to osquery over the provided socket path,
-    /// polling for the socket to exist up to `socket_open_timeout`. Options can
-    /// be used to configure the lock wait times.
+    /// polling for the socket to exist up to `socket_open_timeout`.
     pub fn new_with_timeout<P: AsRef<Path>>(
         path: P,
         socket_open_timeout: Duration,
-        opts: Vec<ClientOption>,
     ) -> TResult<Self> {
         wait_for_socket(path.as_ref(), socket_open_timeout)
-            .map_err(|e| format!("waiting for socket: {}", e))?;
+            .map_err(|e| format!("waiting for socket: {e}"))?;
 
         let stream = TClient::connect(&path)
             .map_err(|e| format!("connecting to {}: {}", path.as_ref().display(), e))?;
-        let mut client = Self::from_stream(stream)?;
-
-        for opt in opts {
-            match opt {
-                ClientOption::DefaultWaitTime(d) => client.wait_time = d,
-                ClientOption::MaxWaitTime(d) => client.max_wait_time = d,
-            }
-        }
-
-        if client.wait_time > client.max_wait_time {
-            return Err("default wait time larger than max wait time".into());
-        }
-
-        Ok(client)
+        Self::from_stream(stream)
     }
 
     /// Build a client from an already-connected stream.
     fn from_stream(stream: TClient) -> TResult<Self> {
-        let transport_in = TBufferedReadTransport::new(stream.try_clone().unwrap());
-        let transport_out = TBufferedWriteTransport::new(stream.try_clone().unwrap());
+        let transport_in = TBufferedReadTransport::new(stream.try_clone()?);
+        let transport_out = TBufferedWriteTransport::new(stream.try_clone()?);
         let protocol_in = Box::new(TBinaryInputProtocol::new(transport_in, false));
         let protocol_out = Box::new(TBinaryOutputProtocol::new(transport_out, true));
 
         Ok(Self {
-            client: Arc::from(Mutex::new(osquery::ExtensionManagerSyncClient::new(
+            client: Box::new(osquery::ExtensionManagerSyncClient::new(
                 protocol_in,
                 protocol_out,
-            ))),
+            )),
             stream: Some(stream),
-            wait_time: DEFAULT_WAIT_TIME,
-            max_wait_time: DEFAULT_MAX_WAIT_TIME,
         })
     }
 
     /// creates a new client communicating to osquery over the provided transports.
     pub fn new_with_proto(
-        input_protocol: Box<dyn TInputProtocol + Send + Sync>,
-        output_protocol: Box<dyn TOutputProtocol + Send + Sync>,
+        input_protocol: Box<dyn TInputProtocol + Send>,
+        output_protocol: Box<dyn TOutputProtocol + Send>,
     ) -> Self {
         Self {
-            client: Arc::from(Mutex::new(osquery::ExtensionManagerSyncClient::new(
+            client: Box::new(osquery::ExtensionManagerSyncClient::new(
                 input_protocol,
                 output_protocol,
-            ))),
+            )),
             stream: None,
-            wait_time: DEFAULT_WAIT_TIME,
-            max_wait_time: DEFAULT_MAX_WAIT_TIME,
-        }
-    }
-
-    /// Execute a closure with the client lock held, with a timeout on lock
-    /// acquisition. Uses `try_lock` polling every millisecond, timing out
-    /// after `wait_time`. This prevents indefinite blocking when the
-    /// underlying thrift socket is held by another thread.
-    fn with_client<R>(
-        &self,
-        f: impl FnOnce(&mut (dyn osquery::TExtensionManagerSyncClient + Send + Sync)) -> TResult<R>,
-    ) -> TResult<R> {
-        let deadline = Instant::now() + self.wait_time;
-        loop {
-            match self.client.try_lock() {
-                Ok(mut guard) => return f(&mut *guard),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    if Instant::now() >= deadline {
-                        return Err(format!(
-                            "timeout after {:?} waiting for client lock",
-                            self.wait_time
-                        )
-                        .into());
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err("client lock poisoned".into());
-                }
-            }
         }
     }
 
@@ -226,7 +159,7 @@ impl ExtensionManagerClient {
     /// ping requests metadata from the extension manager.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
-        self.with_client(|c| c.ping())
+        self.client.ping()
     }
 
     /// call requests a call to an extension (or core) registry plugin.
@@ -240,25 +173,25 @@ impl ExtensionManagerClient {
         item: String,
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse> {
-        self.with_client(|c| c.call(registry, item, request))
+        self.client.call(registry, item, request)
     }
 
     /// shutdown calls the thrift shutdown RPC on the remote end.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn shutdown(&mut self) -> TResult<()> {
-        self.with_client(|c| c.shutdown())
+        self.client.shutdown()
     }
 
     /// extensions requests the list of active registered extensions.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
-        self.with_client(|c| c.extensions())
+        self.client.extensions()
     }
 
     /// options requests the list of bootstrap or configuration options.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn options(&mut self) -> TResult<osquery::InternalOptionList> {
-        self.with_client(|c| c.options())
+        self.client.options()
     }
 
     /// register_extension registers the extension plugins with the osquery process.
@@ -268,7 +201,7 @@ impl ExtensionManagerClient {
         info: osquery::InternalExtensionInfo,
         registry: osquery::ExtensionRegistry,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.with_client(|c| c.register_extension(info, registry))
+        self.client.register_extension(info, registry)
     }
 
     /// deregister_extension de-registers the extension plugins with the osquery process.
@@ -280,20 +213,20 @@ impl ExtensionManagerClient {
         &mut self,
         uuid: osquery::ExtensionRouteUUID,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.with_client(|c| c.deregister_extension(uuid))
+        self.client.deregister_extension(uuid)
     }
 
     /// query requests a query to be run and returns the extension response.
     /// Consider using the query_row or query_rows helpers for a more friendly interface.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.with_client(|c| c.query(sql))
+        self.client.query(sql)
     }
 
     /// get_query_columns requests the columns returned by the parsed query.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.with_client(|c| c.get_query_columns(sql))
+        self.client.get_query_columns(sql)
     }
 
     /// query_rows is a helper that executes the requested query and returns the TResults.
@@ -301,7 +234,7 @@ impl ExtensionManagerClient {
     /// by returning a Thrift TError type.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn query_rows(&mut self, sql: &str) -> TResult<Vec<BTreeMap<String, String>>> {
-        let res = self.with_client(|c| c.query(String::from(sql)))?;
+        let res = self.client.query(String::from(sql))?;
 
         let status = res.status.ok_or("query returned nil status")?;
 
@@ -322,7 +255,7 @@ impl ExtensionManagerClient {
     pub fn query_row(&mut self, sql: &str) -> TResult<BTreeMap<String, String>> {
         let res = self.query_rows(sql)?;
         match res.len() {
-            1 => Ok(res.into_iter().next().unwrap()),
+            1 => res.into_iter().next().ok_or_else(|| "expected 1 row but iterator was empty".into()),
             _ => Err(format!("expected 1 row, got {}", res.len()).into()),
         }
     }
@@ -330,7 +263,7 @@ impl ExtensionManagerClient {
 
 impl ExtensionManager for ExtensionManagerClient {
     fn close(&mut self) {
-        ExtensionManagerClient::close(self)
+        ExtensionManagerClient::close(self);
     }
 
     fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
@@ -435,40 +368,8 @@ mod tests {
     #[serial]
     fn new_with_timeout_connects() {
         let client =
-            ExtensionManagerClient::new_with_timeout(TEST_SOCKET, Duration::from_secs(5), vec![]);
+            ExtensionManagerClient::new_with_timeout(TEST_SOCKET, Duration::from_secs(5));
         assert!(client.is_ok(), "should connect to running osqueryd");
-    }
-
-    #[test]
-    #[ignore = "requires a running osqueryd extension socket"]
-    #[serial]
-    fn new_with_timeout_options() {
-        let client = ExtensionManagerClient::new_with_timeout(
-            TEST_SOCKET,
-            Duration::from_secs(5),
-            vec![
-                ClientOption::DefaultWaitTime(Duration::from_millis(500)),
-                ClientOption::MaxWaitTime(Duration::from_secs(30)),
-            ],
-        )
-        .unwrap();
-        assert_eq!(client.wait_time, Duration::from_millis(500));
-        assert_eq!(client.max_wait_time, Duration::from_secs(30));
-    }
-
-    #[test]
-    #[ignore = "requires a running osqueryd extension socket"]
-    #[serial]
-    fn new_with_timeout_invalid_wait_times() {
-        let result = ExtensionManagerClient::new_with_timeout(
-            TEST_SOCKET,
-            Duration::from_secs(5),
-            vec![
-                ClientOption::DefaultWaitTime(Duration::from_secs(10)),
-                ClientOption::MaxWaitTime(Duration::from_secs(1)),
-            ],
-        );
-        assert!(result.is_err(), "should reject default > max wait time");
     }
 
     #[test]

@@ -3,8 +3,15 @@
 //! This crate implements the components required to build a working
 //! osquery plugin server and client.
 
-use std::{fmt, io, result};
+use std::result;
 
+#[allow(
+    clippy::all,
+    clippy::pedantic,
+    clippy::unwrap_used,
+    unsafe_code,
+    unused
+)]
 mod osquery; // Auto-generated bindings from Thrift.
 
 #[cfg(feature = "client")]
@@ -28,103 +35,90 @@ pub use crate::server::*;
 pub type Result<T> = result::Result<T, Error>;
 
 /// Error type returned by all the plugins.
-pub struct Error {
-    source: Option<Box<dyn std::error::Error + Send + Sync>>,
-    message: Option<String>,
-}
+///
+/// This is a typed error enum that supports context chaining via the
+/// [`message`](Error::message) method, as well as automatic conversion
+/// from Thrift and I/O errors.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    /// A Thrift transport, protocol, or application error.
+    ///
+    /// The message is extracted and formatted because the upstream thrift
+    /// crate's `Display` impl for `ApplicationError` discards the user
+    /// message and only prints the error kind label.
+    #[error("{0}")]
+    Transport(String),
 
-impl std::error::Error for Error {}
+    /// An I/O error.
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+
+    /// An error with an additional context message wrapping an inner error.
+    #[error("{message} - {source}")]
+    Context {
+        /// The context message describing what operation failed.
+        message: String,
+        /// The underlying error that caused the failure.
+        #[source]
+        source: Box<Error>,
+    },
+
+    /// A general error with a descriptive message.
+    #[error("{0}")]
+    Other(String),
+}
 
 impl Error {
+    /// Adds context to this error, wrapping it with an additional message.
+    ///
+    /// If called on an error, the original error becomes the
+    /// [`source`](std::error::Error::source) of the returned error.
+    #[must_use]
     pub fn message(self, message: &str) -> Self {
-        let message = Some(message.to_string());
-        match self.message {
-            Some(_) => Self {
-                message,
-                source: Some(self.into()),
-            },
-            None => Self {
-                source: self.source,
-                message,
-            },
+        Self::Context {
+            message: message.to_string(),
+            source: Box::new(self),
         }
     }
 }
 
-impl<'a> From<&'a str> for Error {
-    fn from(s: &'a str) -> Self {
-        Error {
-            source: None,
-            message: Some(s.to_string()),
-        }
+impl From<&str> for Error {
+    fn from(s: &str) -> Self {
+        Error::Other(s.to_string())
     }
 }
+
 impl From<String> for Error {
     fn from(s: String) -> Self {
-        Error {
-            source: None,
-            message: Some(s),
-        }
+        Error::Other(s)
     }
 }
+
 impl From<thrift::Error> for Error {
     fn from(err: thrift::Error) -> Self {
-        Error {
-            source: Some(match err {
-                thrift::Error::Transport(src) => {
-                    format!("{}: TransportKind({:?})", src.message, src.kind).into()
-                }
-                thrift::Error::Protocol(src) => {
-                    format!("{}: ProtocolKind({:?})", src.message, src.kind).into()
-                }
-                thrift::Error::Application(src) => {
-                    format!("{}: ApplicationKind({:?})", src.message, src.kind).into()
-                }
-                thrift::Error::User(src) => src,
-            }),
-            message: None,
-        }
-    }
-}
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Self {
-        Error {
-            source: Some(Box::new(e)),
-            message: None,
-        }
-    }
-}
-impl From<Error> for Option<String> {
-    fn from(this: Error) -> Self {
-        Some(format!("{}", this))
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(e) = &self.message {
-            write!(f, "{}", e)?;
-            if self.source.is_some() {
-                write!(f, " - ")?;
+        // The upstream thrift crate's Display impls discard user messages
+        // (e.g., ApplicationError only prints "service error" regardless of
+        // the message field). We extract and format explicitly.
+        let formatted = match err {
+            thrift::Error::Transport(ref src) => {
+                format!("{}: TransportKind({:?})", src.message, src.kind)
             }
-        }
-        if let Some(e) = &self.source {
-            write!(f, "{}", e)?;
-        }
-        Ok(())
+            thrift::Error::Protocol(ref src) => {
+                format!("{}: ProtocolKind({:?})", src.message, src.kind)
+            }
+            thrift::Error::Application(ref src) => {
+                format!("{}: ApplicationKind({:?})", src.message, src.kind)
+            }
+            thrift::Error::User(ref src) => src.to_string(),
+        };
+        Error::Transport(formatted)
     }
 }
 
-impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut debug = f.debug_struct("Error");
-        if let Some(e) = &self.message {
-            debug.field("message", e);
-        }
-        if let Some(e) = &self.source {
-            debug.field("source", e);
-        }
-        debug.finish()
+impl From<Error> for Option<String> {
+    fn from(err: Error) -> Self {
+        Some(err.to_string())
     }
 }
 
@@ -156,9 +150,9 @@ mod tests {
     #[test]
     fn error_msg_into() {
         let err: Error = "test".into();
-        assert_eq!(err.message, Error::from("test").message);
+        assert_eq!("test", err.to_string());
         let err: Error = String::from("hello").into();
-        assert_eq!(err.message, Error::from("hello").message);
+        assert_eq!("hello", err.to_string());
         let err: Error = thrift::Error::from("test").into();
         assert_eq!("test: ApplicationKind(Unknown)", err.to_string());
     }
@@ -166,11 +160,11 @@ mod tests {
     #[test]
     fn error_msg_fmt() {
         let err: Error = "testing".into();
-        assert_eq!(err.to_string(), "testing".to_string());
+        assert_eq!(err.to_string(), "testing");
         let err: Error = thrift::Error::from("thrift err msg").into();
         assert_eq!(
             err.to_string(),
-            r#"thrift err msg: ApplicationKind(Unknown)"#.to_string()
+            "thrift err msg: ApplicationKind(Unknown)"
         );
         let err: Error = thrift::Error::Transport(thrift::TransportError::new(
             thrift::TransportErrorKind::AlreadyOpen,
@@ -179,25 +173,46 @@ mod tests {
         .into();
         assert_eq!(
             err.to_string(),
-            r#"hello transport: TransportKind(AlreadyOpen)"#.to_string()
+            "hello transport: TransportKind(AlreadyOpen)"
         );
         let err: Error = thrift::Error::from("thrift err msg").into();
         assert_eq!(
             err.message("error from thrift with message").to_string(),
-            r#"error from thrift with message - thrift err msg: ApplicationKind(Unknown)"#
-                .to_string()
+            "error from thrift with message - thrift err msg: ApplicationKind(Unknown)"
         );
         assert_eq!(
             Error::from("initial msg test")
                 .message("hello test")
                 .to_string(),
-            r#"hello test - initial msg test"#.to_string()
+            "hello test - initial msg test"
         );
         assert_eq!(
             Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
                 .message("hello io")
                 .to_string(),
-            "hello io - broken pipe".to_string()
+            "hello io - broken pipe"
         );
+    }
+
+    #[test]
+    fn error_source_chain() {
+        let inner: Error = "inner error".into();
+        let outer = inner.message("outer context");
+        // std::error::Error::source() should return the inner error
+        let source = std::error::Error::source(&outer);
+        assert!(source.is_some(), "source should be Some");
+        assert!(
+            source
+                .expect("source should be Some")
+                .to_string()
+                .contains("inner error"),
+        );
+    }
+
+    #[test]
+    fn error_into_option_string() {
+        let err: Error = "hello".into();
+        let opt: Option<String> = err.into();
+        assert_eq!(opt, Some("hello".to_string()));
     }
 }

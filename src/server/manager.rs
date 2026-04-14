@@ -13,7 +13,7 @@ use std::{
 };
 
 /// Plugins represents a map of server plugins for a registry
-type Plugins = BTreeMap<Arc<String>, Box<dyn OsqueryPlugin>>;
+type Plugins = BTreeMap<Arc<str>, Box<dyn OsqueryPlugin>>;
 
 /// Registry represents the server plugins registry
 type Registry = Arc<Mutex<BTreeMap<String, Plugins>>>;
@@ -34,6 +34,7 @@ const DEFAULT_PING_INTERVAL: time::Duration = time::Duration::from_secs(5);
 pub const MAX_SOCKET_PATH_CHARACTERS: usize = 97;
 
 /// ServerOption configures an [`ExtensionManagerServer`].
+#[non_exhaustive]
 pub enum ServerOption {
     /// Set the extension version string reported to osquery.
     ExtensionVersion(String),
@@ -46,6 +47,17 @@ pub enum ServerOption {
     /// Use an existing client instead of creating a new one.
     /// When set, the server will not shut down the client on server shutdown.
     WithClient(Box<dyn client::ExtensionManager>),
+}
+
+impl std::fmt::Debug for ServerOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExtensionVersion(v) => f.debug_tuple("ExtensionVersion").field(v).finish(),
+            Self::ServerTimeout(d) => f.debug_tuple("ServerTimeout").field(d).finish(),
+            Self::ServerPingInterval(d) => f.debug_tuple("ServerPingInterval").field(d).finish(),
+            Self::WithClient(_) => f.debug_tuple("WithClient").field(&"<dyn ExtensionManager>").finish(),
+        }
+    }
 }
 
 // ExtensionManagerServer is an implementation of the full ExtensionManager
@@ -109,12 +121,9 @@ impl ExtensionManagerServer {
             }
         }
 
-        let (osquery_client, server_client_should_shutdown) = match provided_client {
-            Some(c) => (c, false),
-            None => {
-                let c = client::ExtensionManagerClient::new_with_path(&socket_path)?;
-                (Box::new(c) as Box<dyn client::ExtensionManager>, true)
-            }
+        let (osquery_client, server_client_should_shutdown) = if let Some(c) = provided_client { (c, false) } else {
+            let c = client::ExtensionManagerClient::new_with_path(&socket_path)?;
+            (Box::new(c) as Box<dyn client::ExtensionManager>, true)
         };
 
         Ok(Self {
@@ -140,8 +149,8 @@ impl ExtensionManagerServer {
     /// register_plugin adds an `OsqueryPlugin` to this extension manager registry.
     pub fn register_plugin(&mut self, plugin: Box<dyn OsqueryPlugin>) -> Result<()> {
         self.registry
-            .try_lock()
-            .map_err(|_| "could not lock thread register plugin error")?
+            .lock()
+            .map_err(|_| "registry lock poisoned")?
             .entry(format!("{}", plugin.registry_name()))
             .or_insert_with(BTreeMap::new)
             .entry(plugin.name())
@@ -162,8 +171,8 @@ impl ExtensionManagerServer {
         let mut ext_registry = osquery::ExtensionRegistry::new();
         let mut registry = self
             .registry
-            .try_lock()
-            .map_err(|_| "thread lock error generating osquery extension registry")?;
+            .lock()
+            .map_err(|_| "registry lock poisoned")?;
 
         for (reg_name, plugins) in registry.iter_mut() {
             let routes = ext_registry.entry(reg_name.clone()).or_default();
@@ -184,8 +193,8 @@ impl ExtensionManagerServer {
         let registry = self.gen_registry()?;
         let response = self
             .osquery_client
-            .try_lock()
-            .map_err(|_| "thread lock error for server_client on start")?
+            .lock()
+            .map_err(|_| "osquery client lock poisoned")?
             .as_mut()
             .ok_or("cannot start, shutdown in progress")?
             .register_extension(
@@ -212,12 +221,8 @@ impl ExtensionManagerServer {
         self.uuid = response.uuid;
 
         let mut listen_path = self.socket_path.clone();
-        self.listen_path = match listen_path
-            .set_extension(format!("em.{}", self.uuid.ok_or("uuid returned nil")?))
-        {
-            true => Some(listen_path),
-            false => return Err("socket_path is not valid file".into()),
-        };
+        self.listen_path = if listen_path
+            .set_extension(format!("em.{}", self.uuid.ok_or("uuid returned nil")?)) { Some(listen_path) } else { return Err("socket_path is not valid file".into()) };
         self.uuid.ok_or_else(|| "uuid returned nil".into())
     }
 
@@ -246,7 +251,7 @@ impl ExtensionManagerServer {
         std::thread::spawn(move || {
             // start listen for connections
             if let Err(err) = server.listen(&listen_path) {
-                shutdown.send(Some(err.into())).unwrap();
+                let _ = shutdown.send(Some(err.into()));
             }
         });
 
@@ -260,8 +265,8 @@ impl ExtensionManagerServer {
     pub fn shutdown(&mut self) -> Result<()> {
         let mut client_guard = self
             .osquery_client
-            .try_lock()
-            .map_err(|_| "could not lock osquery client error")?;
+            .lock()
+            .map_err(|_| "osquery client lock poisoned")?;
 
         // Deregister the extension if we have a client and uuid
         if let Some(client) = client_guard.as_mut() {
@@ -272,7 +277,7 @@ impl ExtensionManagerServer {
                         #[cfg(feature = "tracing")]
                         tracing::warn!("error deregistering extension {}: {}", uuid, err);
                         let _ =
-                            Error::from(err).message(&format!("deregistering extension {}", uuid));
+                            Error::from(err).message(&format!("deregistering extension {uuid}"));
                     }
                     Ok(res) if res.code.unwrap_or_default() != 0 => {
                         #[cfg(feature = "tracing")]
@@ -322,41 +327,38 @@ impl ExtensionManagerServer {
         std::thread::spawn(move || loop {
             std::thread::sleep(ping_interval);
 
-            match osquery_client.lock() {
-                Ok(mut guard) => match guard.as_mut() {
-                    // Client was set to None by shutdown -- exit the ping loop
-                    None => break,
-                    Some(client) => match client.ping() {
-                        Err(e) => {
-                            let msg = Error::from(e).message("extension ping failed");
-                            tx.send(Some(msg)).ok();
-                            break;
-                        }
-                        Ok(status) if status.code.unwrap_or_default() != 0 => {
-                            tx.send(Some(Error::from(format!(
-                                "ping returned status {}",
-                                status.code.unwrap_or_default()
-                            ))))
-                            .ok();
-                            break;
-                        }
-                        Ok(_) => {}
-                    },
-                },
-                Err(_) => {
-                    tx.send(Some(Error::from("could not lock osquery client for ping")))
+            if let Ok(mut guard) = osquery_client.lock() { match guard.as_mut() {
+                // Client was set to None by shutdown -- exit the ping loop
+                None => break,
+                Some(client) => match client.ping() {
+                    Err(e) => {
+                        let msg = Error::from(e).message("extension ping failed");
+                        tx.send(Some(msg)).ok();
+                        break;
+                    }
+                    Ok(status) if status.code.unwrap_or_default() != 0 => {
+                        tx.send(Some(Error::from(format!(
+                            "ping returned status {}",
+                            status.code.unwrap_or_default()
+                        ))))
                         .ok();
-                    break;
-                }
+                        break;
+                    }
+                    Ok(_) => {}
+                },
+            } } else {
+                tx.send(Some(Error::from("could not lock osquery client for ping")))
+                    .ok();
+                break;
             }
         });
 
         // wait for the shutdown signal and initiate shutdown.
         let stop_signal = rx.recv();
-        self.shutdown().and_then(move |_| match stop_signal {
-            Ok(signal) if signal.is_some() => Err(signal.unwrap()),
+        self.shutdown().and_then(move |()| match stop_signal {
+            Ok(Some(err)) => Err(err),
             Err(_) => Err("shutdown signal error".into()),
-            Ok(_) => Ok(()),
+            Ok(None) => Ok(()),
         })
     }
 }
@@ -384,33 +386,26 @@ impl osquery::ExtensionSyncHandler for ExtensionServerHandler {
         item: String,
         request: osquery::ExtensionPluginRequest,
     ) -> thrift::Result<osquery::ExtensionResponse> {
-        match self
+        if let Some(subreg) = self
             .registry
-            .try_lock()
-            .map_err(|_| "could not lock register error")?
-            .get_mut(&registry)
-        {
-            Some(subreg) => match subreg.get_mut(&item) {
-                Some(plugin) => Ok(plugin.call(request)),
-                None => {
-                    let msg = format!("Unknown registry item: {}", item);
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!("{}", msg);
-                    Ok(osquery::ExtensionResponse::new(
-                        osquery::ExtensionStatus::new(1, msg, None),
-                        None,
-                    ))
-                }
-            },
-            None => {
-                let msg = format!("Unknown registry: {}", registry);
-                #[cfg(feature = "tracing")]
-                tracing::warn!("{}", msg);
-                Ok(osquery::ExtensionResponse::new(
-                    osquery::ExtensionStatus::new(1, msg, None),
-                    None,
-                ))
-            }
+            .lock()
+            .map_err(|_| "registry lock poisoned")?
+            .get_mut(&registry) { if let Some(plugin) = subreg.get_mut(item.as_str()) { Ok(plugin.call(request)) } else {
+            let msg = format!("Unknown registry item: {item}");
+            #[cfg(feature = "tracing")]
+            tracing::warn!("{}", msg);
+            Ok(osquery::ExtensionResponse::new(
+                osquery::ExtensionStatus::new(1, msg, None),
+                None,
+            ))
+        } } else {
+            let msg = format!("Unknown registry: {registry}");
+            #[cfg(feature = "tracing")]
+            tracing::warn!("{}", msg);
+            Ok(osquery::ExtensionResponse::new(
+                osquery::ExtensionStatus::new(1, msg, None),
+                None,
+            ))
         }
     }
 
@@ -473,7 +468,7 @@ mod tests {
             .unwrap()
             .get("table")
             .expect("plugin not found in table registry found")
-            .get(&name.to_string());
+            .get(name);
     }
 
     #[test]
@@ -705,21 +700,21 @@ mod tests {
         assert!(
             registry
                 .get("table")
-                .and_then(|r| r.get(&"plugin_a".to_string()))
+                .and_then(|r| r.get("plugin_a"))
                 .is_some(),
             "plugin_a should be in table registry"
         );
         assert!(
             registry
                 .get("logger")
-                .and_then(|r| r.get(&"plugin_b".to_string()))
+                .and_then(|r| r.get("plugin_b"))
                 .is_some(),
             "plugin_b should be in logger registry"
         );
         assert!(
             registry
                 .get("config")
-                .and_then(|r| r.get(&"plugin_c".to_string()))
+                .and_then(|r| r.get("plugin_c"))
                 .is_some(),
             "plugin_c should be in config registry"
         );

@@ -7,7 +7,8 @@ pub use manager::*;
 
 /// RegistryNames contains the allowable registry_name values. If a plugin
 /// attempts to register with another value, the program will panic.
-#[derive(PartialEq, Debug)]
+#[non_exhaustive]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum RegistryName {
     Table,
     Logger,
@@ -30,7 +31,7 @@ impl fmt::Display for RegistryName {
 pub trait OsqueryPlugin: Send + Sync {
     /// Name used to refer to the plugin (eg. the name of the
     /// table the plugin implements).
-    fn name(&self) -> Arc<String>;
+    fn name(&self) -> Arc<str>;
 
     /// Which "registry" the plugin should be added to.
     fn registry_name(&self) -> &RegistryName;

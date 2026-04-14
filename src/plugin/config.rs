@@ -12,7 +12,7 @@ type Config = BTreeMap<String, String>;
 /// * [`GenFunc`]: returns a map that should use the source name as key, and the config
 ///   JSON as values.
 pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
-    name: Arc<String>,
+    name: Arc<str>,
     registry: RegistryName,
     generate: GenFunc,
 }
@@ -23,7 +23,7 @@ impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
     ///   that uses the source name as key, and the config JSON as values.
     pub fn new(name: &str, generate: GenFunc) -> Box<Self> {
         Box::new(Self {
-            name: Arc::from(name.to_string()),
+            name: Arc::from(name),
             registry: RegistryName::Config,
             generate,
         })
@@ -31,7 +31,7 @@ impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
 }
 
 impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigPlugin<GenFunc> {
-    fn name(&self) -> std::sync::Arc<String> {
+    fn name(&self) -> std::sync::Arc<str> {
         Arc::clone(&self.name)
     }
 
@@ -60,7 +60,7 @@ impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigP
                 }
             },
             Some(action) => osquery::ExtensionResponse::new(
-                osquery::ExtensionStatus::new(1, format!("unknown action: {}", action), None),
+                osquery::ExtensionStatus::new(1, format!("unknown action: {action}"), None),
                 None,
             ),
             None => osquery::ExtensionResponse::new(
@@ -88,7 +88,7 @@ mod tests {
             )]))
         });
 
-        assert_eq!(plugin.name().as_str(), "mock");
+        assert_eq!(&*plugin.name(), "mock");
         assert_eq!(*plugin.registry_name(), RegistryName::Config);
 
         let res = plugin.call(osquery::ExtensionPluginRequest::from([(

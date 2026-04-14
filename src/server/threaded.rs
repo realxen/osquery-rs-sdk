@@ -90,10 +90,12 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                                 self.handle_connection(std::mem::replace(
                                     &mut server,
                                     ServerOptions::new().create(pipe_name)?,
-                                ))?;
+                                ));
                             }
                             Err(e) => {
-                                break eprintln!("failed to accept remote connection with error {:?}", e)
+                                #[cfg(feature = "tracing")]
+                                tracing::error!("failed to accept remote connection: {e:?}");
+                                break;
                             }
                         }
                     }
@@ -115,9 +117,11 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                 tokio::select! {
                     result = listener.accept() => {
                         match result {
-                            Ok((stream, _)) => self.handle_connection(stream)?,
+                            Ok((stream, _)) => self.handle_connection(stream),
                             Err(e) => {
-                                break eprintln!("failed to accept remote connection with error {:?}", e)
+                                #[cfg(feature = "tracing")]
+                                tracing::error!("failed to accept remote connection: {e:?}");
+                                break;
                             }
                         }
                     }
@@ -138,18 +142,19 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
     fn handle_connection<RW: AsyncRead + AsyncWrite + Send + 'static>(
         &self,
         stream: RW,
-    ) -> io::Result<()> {
+    ) {
         let processor = self.processor.clone();
         self.runtime.spawn(async move {
             let (mut reader, mut writer) = tokio::io::split(stream);
             let mut read_transport = BufReader::new(&mut reader);
+            let mut write_buf = Vec::with_capacity(4096);
             loop {
                 match read_transport.fill_buf().await {
                     Ok(s) => {
                         let buf_count = s.len();
-                        let mut write_tran = Vec::new(); // TODO: Reuse or buffer writes to avoid per-request allocations.
+                        write_buf.clear();
                         let mut i_proto = TBinaryInputProtocol::new(s, false);
-                        let mut o_proto = TBinaryOutputProtocol::new(&mut write_tran, true);
+                        let mut o_proto = TBinaryOutputProtocol::new(&mut write_buf, true);
 
                         match processor.process(&mut i_proto, &mut o_proto) {
                             Ok(()) => {}
@@ -158,23 +163,26 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                                     TError::Transport(terr)
                                         if terr.kind == TErrorKind::EndOfFile => {}
                                     other => {
-                                        eprintln!("processor completed with error: {:?}", other)
+                                        #[cfg(feature = "tracing")]
+                                        tracing::error!("processor completed with error: {other:?}");
                                     }
-                                };
+                                }
                                 break;
                             }
                         }
                         // TODO: Break out on persistent write failures instead of retrying forever.
-                        if writer.write_all(write_tran.as_ref()).await.is_ok() {
+                        if writer.write_all(write_buf.as_ref()).await.is_ok() {
                             // Advance the read buffer only after the response has been written.
                             read_transport.consume(buf_count);
                         }
                     }
-                    Err(e) => eprintln!("Error reading stream - {:?}", e),
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("error reading stream: {e:?}");
+                    }
                 }
             }
         });
-        Ok(())
     }
 }
 
@@ -223,7 +231,7 @@ mod tests {
             MockExtensionServerHandler {},
         ))
         .unwrap();
-        ExtensionServer::handle_connection(&server, read_chan).unwrap();
+        ExtensionServer::handle_connection(&server, read_chan);
         rt.block_on(async move {
             write_chan
                 // TODO: Fix, this can fail if the protocol version changes

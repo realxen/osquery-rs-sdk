@@ -130,8 +130,7 @@ impl<'de> Deserialize<'de> for OsqueryInt {
                 Ok(OsqueryInt::from(op))
             }
             value => Err(de::Error::custom(format!(
-                "invalid value {}, expected int",
-                value,
+                "invalid value {value}, expected int",
             ))),
         }
     }
@@ -164,16 +163,13 @@ impl TryFrom<QueriesResponse> for Vec<QueryResponse> {
             let rows = match queries.get(&query_name) {
                 Some(Value::Array(rows)) => {
                     serde::Deserialize::deserialize(rows.clone().into_deserializer())
-                        .map_err(|err| format!("{}: {}", query_name, err))?
+                        .map_err(|err| format!("{query_name}: {err}"))?
                 }
-                // Empty string results are treated as empty rows
-                Some(Value::String(_)) => vec![],
-                // Status without corresponding query result
-                None => vec![],
+                // Empty string results or missing query results are treated as empty rows
+                Some(Value::String(_)) | None => vec![],
                 Some(other) => {
                     return Err(format!(
-                        "results for \"{}\" unknown type {}",
-                        query_name, other
+                        "results for \"{query_name}\" unknown type {other}"
                     ))
                 }
             };
@@ -200,7 +196,7 @@ where
     GetFunc: FnMut() -> Result<QueriesRequest>,
     WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()>,
 {
-    name: Arc<String>,
+    name: Arc<str>,
     registry: RegistryName,
     get_queries: GetFunc,
     write_queries: WriteFunc,
@@ -213,7 +209,7 @@ where
 {
     pub fn new(name: &str, get_queries: GetFunc, write_queries: WriteFunc) -> Box<Self> {
         Box::new(Self {
-            name: Arc::from(name.to_string()),
+            name: Arc::from(name),
             registry: RegistryName::Distributed,
             get_queries,
             write_queries,
@@ -226,7 +222,7 @@ where
     GetFunc: FnMut() -> Result<QueriesRequest> + Send + Sync,
     WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()> + Send + Sync,
 {
-    fn name(&self) -> std::sync::Arc<String> {
+    fn name(&self) -> std::sync::Arc<str> {
         Arc::clone(&self.name)
     }
 
@@ -243,13 +239,13 @@ where
             // Call get_queries
             Some(action) if action == "getQueries" => {
                 match (self.get_queries)() {
-                    Ok(resq) => match serde_json::to_string(&resq) {
+                    Ok(response) => match serde_json::to_string(&response) {
                         Ok(query_json) => Ok(osquery::ExtensionPluginResponse::from([
                             BTreeMap::from([("results".to_string(), query_json)]),
                         ])),
-                        Err(err) => Err(format!("error deserializing queries: {}", err).into()),
+                        Err(err) => Err(format!("error deserializing queries: {err}").into()),
                     },
-                    Err(err) => Err(format!("error serializing queries: {}", err).into()),
+                    Err(err) => Err(format!("error serializing queries: {err}").into()),
                 }
             }
             // Call write_queries
@@ -259,17 +255,17 @@ where
                         let query_resp: result::Result<Vec<QueryResponse>, _> = queries.try_into();
                         match query_resp {
                             Ok(results) => match (self.write_queries)(results) {
-                                Ok(_) => Ok(osquery::ExtensionPluginResponse::default()),
-                                Err(err) => Err(format!("error writing results: {}", err).into()),
+                                Ok(()) => Ok(osquery::ExtensionPluginResponse::default()),
+                                Err(err) => Err(format!("error writing results: {err}").into()),
                             },
-                            Err(err) => Err(format!("error writing results: {}", err).into()),
+                            Err(err) => Err(format!("error writing results: {err}").into()),
                         }
                     }
-                    Err(err) => Err(format!("error unmarshalling results: {}", err).into()),
+                    Err(err) => Err(format!("error unmarshalling results: {err}").into()),
                 },
                 None => Err(String::from("error results is nil").into()),
             },
-            Some(action) => Err(format!("unknown action: {}", action).into()),
+            Some(action) => Err(format!("unknown action: {action}").into()),
             None => Err(String::from("action is nil").into()),
         };
 
@@ -336,7 +332,7 @@ mod tests {
             },
         );
 
-        assert_eq!(plugin.name().as_str(), "mock");
+        assert_eq!(&*plugin.name(), "mock");
         assert_eq!(*plugin.registry_name(), RegistryName::Distributed);
 
         // Call getQueries
