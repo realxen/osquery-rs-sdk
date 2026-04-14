@@ -86,6 +86,7 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
             match LogType::from_str(typ) {
                 Err(_) => errors.push(format!("cannot log request type: {}", typ)),
                 Ok(LogType::Status) => match req.get("log") {
+                    Some(data) if data.is_empty() => errors.push(String::from("got empty status")),
                     Some(data) => {
                         // Dirty hack because osquery gives us malformed JSON.
                         let mut status_json = data.replace(r#""":"#, "");
@@ -127,7 +128,7 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
         }
 
         osquery::ExtensionResponse::new(
-            osquery::ExtensionStatus::new(0, String::from("Ok"), None),
+            osquery::ExtensionStatus::new(0, String::from("OK"), None),
             osquery::ExtensionPluginResponse::new(),
         )
     }
@@ -141,7 +142,7 @@ mod tests {
     fn logger_plugin() {
         let mut status_calls = 0;
         let mut last_status_log = String::new();
-        let status_ok = osquery::ExtensionStatus::new(0, String::from("Ok"), None);
+        let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
 
         // Basic methods and Log string
         let mut plugin = LoggerPlugin::new("mock", |typ, log| {

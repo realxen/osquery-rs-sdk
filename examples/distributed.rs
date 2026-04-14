@@ -1,5 +1,5 @@
 use osquery_rs_sdk::{
-    plugin::distributed::{DistributedPlugin, QueriesResquest, QueryResponse},
+    plugin::distributed::{DistributedPlugin, QueriesRequest, QueryResponse},
     ExtensionManagerServer, Result,
 };
 use std::collections::BTreeMap;
@@ -19,8 +19,8 @@ fn main() -> Result<()> {
     server.run()
 }
 
-fn get_queries() -> Result<QueriesResquest> {
-    Ok(QueriesResquest::new(BTreeMap::from([(
+fn get_queries() -> Result<QueriesRequest> {
+    Ok(QueriesRequest::new(BTreeMap::from([(
         "time".to_string(),
         "select * from time".to_string(),
     )])))

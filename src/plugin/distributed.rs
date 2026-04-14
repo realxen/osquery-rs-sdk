@@ -9,22 +9,10 @@ use serde::{
 use serde_json::Value;
 use std::{collections::BTreeMap, result, sync::Arc};
 
-// Returns the queries that should be executed.
-// The returned map should include the query name as the keys, and the query
-// text as values. Results will be returned corresponding to the provided name.
-// The context argument can optionally be used for cancellation in long-running
-// operations.
-pub type QueriesResquestFunc = fn() -> Result<QueriesResquest>;
-
-/// writes the results of the executed distributed queries. The
-/// query results will be serialized JSON in the results map with the query name
-/// as the key.
-pub type QueriesResponseFunc = fn(Vec<QueryResponse>) -> Result<()>;
-
 /// Contains the information about which queries the
 /// distributed system should run.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct QueriesResquest {
+pub struct QueriesRequest {
     /// Map from query name to query SQL
     queries: BTreeMap<String, String>,
 
@@ -43,7 +31,7 @@ pub struct QueriesResquest {
     accelerate_seconds: i64,
 }
 
-impl QueriesResquest {
+impl QueriesRequest {
     pub fn new(queries: BTreeMap<String, String>) -> Self {
         Self {
             queries,
@@ -62,13 +50,40 @@ pub struct QueryResponse {
     pub status: i64,
     /// Result rows of the query.
     pub rows: Vec<BTreeMap<String, String>>,
+    /// Stats about the execution of the given query.
+    pub stats: Option<Stats>,
+    /// Message string indicating the status of the query.
+    #[serde(default)]
+    pub message: String,
 }
 
-// Handles deserializing integers in noncanonical osquery json.
-#[derive(Debug)]
-struct OsqueryStatus(i64);
+/// Holds performance stats about the execution of a given query.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Stats {
+    #[serde(default, deserialize_with = "deserialize_osquery_int")]
+    pub wall_time_ms: i64,
+    #[serde(default, deserialize_with = "deserialize_osquery_int")]
+    pub user_time: i64,
+    #[serde(default, deserialize_with = "deserialize_osquery_int")]
+    pub system_time: i64,
+    #[serde(default, deserialize_with = "deserialize_osquery_int")]
+    pub memory: i64,
+}
 
-impl std::ops::Deref for OsqueryStatus {
+/// Handles deserializing integers in noncanonical osquery JSON.
+/// osquery may encode integers as either JSON numbers or quoted strings.
+fn deserialize_osquery_int<'de, D>(deserializer: D) -> result::Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    OsqueryInt::deserialize(deserializer).map(|oi| oi.0)
+}
+
+// Handles deserializing integers in noncanonical osquery JSON.
+#[derive(Debug)]
+struct OsqueryInt(i64);
+
+impl std::ops::Deref for OsqueryInt {
     type Target = i64;
 
     fn deref(&self) -> &Self::Target {
@@ -76,26 +91,26 @@ impl std::ops::Deref for OsqueryStatus {
     }
 }
 
-impl From<i64> for OsqueryStatus {
+impl From<i64> for OsqueryInt {
     fn from(inner: i64) -> Self {
-        OsqueryStatus(inner)
+        OsqueryInt(inner)
     }
 }
 
-impl From<OsqueryStatus> for i64 {
-    fn from(this: OsqueryStatus) -> Self {
+impl From<OsqueryInt> for i64 {
+    fn from(this: OsqueryInt) -> Self {
         this.0
     }
 }
 
-impl TryFrom<&str> for OsqueryStatus {
+impl TryFrom<&str> for OsqueryInt {
     type Error = std::num::ParseIntError;
     fn try_from(value: &str) -> result::Result<Self, Self::Error> {
-        Ok(OsqueryStatus(value.parse::<i64>()?))
+        Ok(OsqueryInt(value.parse::<i64>()?))
     }
 }
 
-impl<'de> Deserialize<'de> for OsqueryStatus {
+impl<'de> Deserialize<'de> for OsqueryInt {
     fn deserialize<D>(deserializer: D) -> result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -105,14 +120,14 @@ impl<'de> Deserialize<'de> for OsqueryStatus {
             // osquery < v3.0 with stringy types
             Value::String(s) if !s.is_empty() => {
                 let op = s.parse::<i64>().map_err(de::Error::custom)?;
-                Ok(OsqueryStatus::from(op))
+                Ok(OsqueryInt::from(op))
             }
             // osquery > v3.0 with strong types
             Value::Number(n) if n.is_i64() => {
                 let op = n
                     .as_i64()
                     .ok_or_else(|| de::Error::custom("expected int"))?;
-                Ok(OsqueryStatus::from(op))
+                Ok(OsqueryInt::from(op))
             }
             value => Err(de::Error::custom(format!(
                 "invalid value {}, expected int",
@@ -126,46 +141,77 @@ impl<'de> Deserialize<'de> for OsqueryStatus {
 #[derive(Debug, Deserialize)]
 struct QueriesResponse {
     queries: BTreeMap<String, Value>,
-    statuses: BTreeMap<String, OsqueryStatus>,
+    statuses: BTreeMap<String, OsqueryInt>,
+    #[serde(default)]
+    stats: BTreeMap<String, Stats>,
+    #[serde(default)]
+    messages: BTreeMap<String, String>,
 }
 
 impl TryFrom<QueriesResponse> for Vec<QueryResponse> {
     type Error = String;
 
     fn try_from(this: QueriesResponse) -> result::Result<Self, Self::Error> {
+        let QueriesResponse {
+            queries,
+            statuses,
+            stats,
+            messages,
+        } = this;
         let mut responses = vec![];
 
-        for (query_name, status) in this.statuses {
-            if let Some(Value::Array(rows)) = this.queries.get(&query_name) {
-                let rows: Vec<BTreeMap<String, String>> =
+        for (query_name, status) in statuses {
+            let rows = match queries.get(&query_name) {
+                Some(Value::Array(rows)) => {
                     serde::Deserialize::deserialize(rows.clone().into_deserializer())
-                        .map_err(|err| format!("{}: {}", query_name, err))?;
-                responses.push(QueryResponse {
-                    query_name,
-                    status: status.into(),
-                    rows,
-                });
-            }
+                        .map_err(|err| format!("{}: {}", query_name, err))?
+                }
+                // Empty string results are treated as empty rows
+                Some(Value::String(_)) => vec![],
+                // Status without corresponding query result
+                None => vec![],
+                Some(other) => {
+                    return Err(format!(
+                        "results for \"{}\" unknown type {}",
+                        query_name, other
+                    ))
+                }
+            };
+
+            let query_stats = stats.get(&query_name).cloned();
+            let message = messages.get(&query_name).cloned().unwrap_or_default();
+
+            responses.push(QueryResponse {
+                query_name,
+                status: status.into(),
+                rows,
+                stats: query_stats,
+                message,
+            });
         }
 
         Ok(responses)
     }
 }
 
-/// Osquery distributed plugin. That implement the OsqueryPlugin interface
-pub struct DistributedPlugin {
+/// Osquery distributed plugin. Implements the OsqueryPlugin interface.
+pub struct DistributedPlugin<GetFunc, WriteFunc>
+where
+    GetFunc: FnMut() -> Result<QueriesRequest>,
+    WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()>,
+{
     name: Arc<String>,
     registry: RegistryName,
-    get_queries: QueriesResquestFunc,
-    write_queries: QueriesResponseFunc,
+    get_queries: GetFunc,
+    write_queries: WriteFunc,
 }
 
-impl DistributedPlugin {
-    pub fn new(
-        name: &str,
-        get_queries: QueriesResquestFunc,
-        write_queries: QueriesResponseFunc,
-    ) -> Box<Self> {
+impl<GetFunc, WriteFunc> DistributedPlugin<GetFunc, WriteFunc>
+where
+    GetFunc: FnMut() -> Result<QueriesRequest>,
+    WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()>,
+{
+    pub fn new(name: &str, get_queries: GetFunc, write_queries: WriteFunc) -> Box<Self> {
         Box::new(Self {
             name: Arc::from(name.to_string()),
             registry: RegistryName::Distributed,
@@ -175,7 +221,11 @@ impl DistributedPlugin {
     }
 }
 
-impl OsqueryPlugin for DistributedPlugin {
+impl<GetFunc, WriteFunc> OsqueryPlugin for DistributedPlugin<GetFunc, WriteFunc>
+where
+    GetFunc: FnMut() -> Result<QueriesRequest> + Send + Sync,
+    WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()> + Send + Sync,
+{
     fn name(&self) -> std::sync::Arc<String> {
         Arc::clone(&self.name)
     }
@@ -186,7 +236,7 @@ impl OsqueryPlugin for DistributedPlugin {
 
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
         let result: Result<_> = match req.get("action") {
-            // Call QueriesResquestFunc
+            // Call get_queries
             Some(action) if action == "getQueries" => {
                 match (self.get_queries)() {
                     Ok(resq) => match serde_json::to_string(&resq) {
@@ -198,7 +248,7 @@ impl OsqueryPlugin for DistributedPlugin {
                     Err(err) => Err(format!("error serializing queries: {}", err).into()),
                 }
             }
-            // Call QueriesResponseFunc
+            // Call write_queries
             Some(action) if action == "writeResults" => match req.get("results") {
                 Some(results_json) => match serde_json::from_str::<QueriesResponse>(results_json) {
                     Ok(queries) => {
@@ -242,7 +292,7 @@ mod tests {
         let mut plugin = DistributedPlugin::new(
             "mock",
             move || {
-                Ok(QueriesResquest::new(BTreeMap::from([
+                Ok(QueriesRequest::new(BTreeMap::from([
                     (
                         "query1".to_string(),
                         "select iso_8601 from time".to_string(),
@@ -255,27 +305,29 @@ mod tests {
                 ])))
             },
             move |res| {
-                assert_eq!(res.len(), 2);
-                assert!(res.first().is_some());
-                assert_eq!(res.first().unwrap().query_name, "query1".to_string());
-                assert_eq!(res.first().unwrap().status, 0);
+                // 3 results: query1 (rows), query2 (rows), query3 (status only, empty rows)
+                assert_eq!(res.len(), 3);
+                assert_eq!(res[0].query_name, "query1");
+                assert_eq!(res[0].status, 0);
                 assert_eq!(
-                    res.first().unwrap().rows,
+                    res[0].rows,
                     vec![BTreeMap::from([(
                         "iso_8601".to_string(),
                         "2017-07-10T22:08:40Z".to_string()
                     )])]
                 );
-                assert!(res.last().is_some());
-                assert_eq!(res.last().unwrap().query_name, "query2".to_string());
-                assert_eq!(res.last().unwrap().status, 0);
+                assert_eq!(res[1].query_name, "query2");
+                assert_eq!(res[1].status, 0);
                 assert_eq!(
-                    res.last().unwrap().rows,
+                    res[1].rows,
                     vec![BTreeMap::from([(
                         "version".to_string(),
                         "2.4.0".to_string()
                     )])]
                 );
+                assert_eq!(res[2].query_name, "query3");
+                assert_eq!(res[2].status, 1);
+                assert!(res[2].rows.is_empty());
                 Ok(())
             },
         );
@@ -304,7 +356,7 @@ mod tests {
             (String::from("results"), String::from(r#"{"queries":{"query1":[{"iso_8601":"2017-07-10T22:08:40Z"}],"query2":[{"version":"2.4.0"}]},"statuses":{"query1":"0","query2":"0","query3":"1"}}"#)),
         ]));
         assert_eq!(resp.status.unwrap(), status_ok);
-        // Call writeResults with osquery > v3.0 with stringy types
+        // Call writeResults with osquery > v3.0 with strong types
         let resp = plugin.call(osquery::ExtensionPluginRequest::from([
             (String::from("action"), String::from("writeResults")),
             (String::from("results"), String::from(r#"{"queries":{"query1":[{"iso_8601":"2017-07-10T22:08:40Z"}],"query2":[{"version":"2.4.0"}]},"statuses":{"query1":0,"query2":0,"query3":1}}"#)),
@@ -318,7 +370,7 @@ mod tests {
         let mut plugin = DistributedPlugin::new(
             "mock",
             move || {
-                Ok(QueriesResquest {
+                Ok(QueriesRequest {
                     queries: BTreeMap::from([(
                         "query1".to_string(),
                         "select * from time".to_string(),
@@ -384,7 +436,7 @@ mod tests {
             resp.status.unwrap().message.unwrap(),
             "error serializing queries: getQueries failed".to_string()
         );
-        // Call with good action but getQueries fails
+        // Call with good action but bad results
         let resp = plugin.call(osquery::ExtensionPluginRequest::from([
             (String::from("action"), String::from("writeResults")),
             (
@@ -400,7 +452,7 @@ mod tests {
             "error unmarshalling results: invalid digit found in string at line 1 column 30"
                 .to_string()
         );
-        // Call with good action but getQueries fails
+        // Call with good action but bad status type
         let resp = plugin.call(osquery::ExtensionPluginRequest::from([
             (String::from("action"), String::from("writeResults")),
             (
@@ -416,7 +468,7 @@ mod tests {
             "error unmarshalling results: invalid value [], expected int at line 1 column 27"
                 .to_string()
         );
-        // Call with good action but getQueries fails
+        // Call with good action but missing queries field
         let resp = plugin.call(osquery::ExtensionPluginRequest::from([
             (String::from("action"), String::from("writeResults")),
             (String::from("results"), String::from(r#"{"statuses": {}}"#)),
@@ -431,8 +483,118 @@ mod tests {
     }
 
     #[test]
+    fn distributed_plugin_with_stats_and_messages() {
+        let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
+        let mut plugin = DistributedPlugin::new(
+            "mock",
+            || Ok(QueriesRequest::new(BTreeMap::new())),
+            |res| {
+                assert_eq!(res.len(), 1);
+                assert_eq!(res[0].query_name, "q1");
+                assert_eq!(res[0].status, 0);
+                let stats = res[0].stats.as_ref().unwrap();
+                assert_eq!(stats.wall_time_ms, 42);
+                assert_eq!(stats.user_time, 10);
+                assert_eq!(stats.system_time, 5);
+                assert_eq!(stats.memory, 1024);
+                assert_eq!(res[0].message, "completed");
+                Ok(())
+            },
+        );
+        let resp = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("writeResults")),
+            (
+                String::from("results"),
+                String::from(
+                    r#"{"queries":{"q1":[{"col":"val"}]},"statuses":{"q1":0},"stats":{"q1":{"wall_time_ms":42,"user_time":10,"system_time":5,"memory":1024}},"messages":{"q1":"completed"}}"#,
+                ),
+            ),
+        ]));
+        assert_eq!(resp.status.unwrap(), status_ok);
+    }
+
+    #[test]
+    fn distributed_plugin_with_stringy_stats() {
+        let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
+        let mut plugin = DistributedPlugin::new(
+            "mock",
+            || Ok(QueriesRequest::new(BTreeMap::new())),
+            |res| {
+                assert_eq!(res.len(), 1);
+                let stats = res[0].stats.as_ref().unwrap();
+                assert_eq!(stats.wall_time_ms, 100);
+                assert_eq!(stats.user_time, 20);
+                Ok(())
+            },
+        );
+        // Stats with stringy ints (osquery < v3)
+        let resp = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("writeResults")),
+            (
+                String::from("results"),
+                String::from(
+                    r#"{"queries":{"q1":[]},"statuses":{"q1":"0"},"stats":{"q1":{"wall_time_ms":"100","user_time":"20","system_time":"0","memory":"0"}}}"#,
+                ),
+            ),
+        ]));
+        assert_eq!(resp.status.unwrap(), status_ok);
+    }
+
+    #[test]
+    fn distributed_empty_string_results() {
+        let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
+        let mut plugin = DistributedPlugin::new(
+            "mock",
+            || Ok(QueriesRequest::new(BTreeMap::new())),
+            |res| {
+                assert_eq!(res.len(), 2);
+                // q1 has empty string result -> empty rows
+                assert_eq!(res[0].query_name, "q1");
+                assert!(res[0].rows.is_empty());
+                // q2 has array result
+                assert_eq!(res[1].query_name, "q2");
+                assert_eq!(res[1].rows.len(), 1);
+                Ok(())
+            },
+        );
+        let resp = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("writeResults")),
+            (
+                String::from("results"),
+                String::from(
+                    r#"{"queries":{"q1":"","q2":[{"c":"v"}]},"statuses":{"q1":0,"q2":0}}"#,
+                ),
+            ),
+        ]));
+        assert_eq!(resp.status.unwrap(), status_ok);
+    }
+
+    #[test]
+    fn distributed_closure_captures_state() {
+        let call_count = std::sync::atomic::AtomicU32::new(0);
+        let mut plugin = DistributedPlugin::new(
+            "mock",
+            || {
+                call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(QueriesRequest::new(BTreeMap::from([(
+                    "q1".to_string(),
+                    "select 1".to_string(),
+                )])))
+            },
+            |_| Ok(()),
+        );
+        // Verify closures work (not just fn pointers)
+        let resp = plugin.call(osquery::ExtensionPluginRequest::from([(
+            String::from("action"),
+            String::from("getQueries"),
+        )]));
+        assert_eq!(resp.status.unwrap().code.unwrap(), 0);
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn deserialize_response() {
-        const RAW_JSON_QUERY: &str = r#"{"queries":{"detail_query_network_interface":[{"interface":"en0","mac":"78:4f:43:9c:3c:8d","type":"","mtu":"1500","metric":"0","ipackets":"7071136","opackets":"6408727","ibytes":"1481456771","obytes":"1633052673","ierrors":"0","oerrors":"0","idrops":"0","odrops":"0","last_change":"1501077669","description":"","manufacturer":"","connection_id":"","connection_status":"","enabled":"","physical_adapter":"","speed":"","dhcp_enabled":"","dhcp_lease_expires":"","dhcp_lease_obtained":"","dhcp_server":"","dns_domain":"","dns_domain_suffix_search_order":"","dns_host_name":"","dns_server_search_order":"","interface":"en0","address":"192.168.1.135","mask":"255.255.255.0","broadcast":"192.168.1.255","point_to_point":"","type":""}],"detail_query_os_version":[{"name":"Mac OS X","version":"10.12.6","major":"10","minor":"12","patch":"6","build":"16G29","platform":"darwin","platform_like":"darwin","codename":""}],"detail_query_osquery_flags":[{"name":"config_refresh","value":"10"},{"name":"distributed_interval","value":"10"},{"name":"logger_tls_period","value":"10"}],"detail_query_osquery_info":[{"pid":"75680","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","instance_id":"89f267fa-9a17-4a73-87d6-05197491f2e8","version":"2.5.0","config_hash":"960121acb9bcbb136ce49fe77000752f237fd0dd","config_valid":"1","extensions":"active","build_platform":"darwin","build_distro":"10.12","start_time":"1502371429","watcher":"75678"}],"detail_query_system_info":[{"hostname":"Johns-MacBook-Pro.local","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","cpu_type":"x86_64h","cpu_subtype":"Intel x86-64h Haswell","cpu_brand":"Intel(R) Core(TM) i7-6820HQ CPU @ 2.70GHz","cpu_physical_cores":"4","cpu_logical_cores":"8","physical_memory":"17179869184","hardware_vendor":"Apple Inc.","hardware_model":"MacBookPro13,3","hardware_version":"1.0","hardware_serial":"C02SP067H040","computer_name":"","local_hostname":"Johns-MacBook-Pro"}],"detail_query_uptime":[{"days":"21","hours":"18","minutes":"44","seconds":"28","total_seconds":"1881868"}],"label_query_6":[{"1":"1"}],"label_query_9":"","detail_query_network_interface":[{"interface":"en0","mac":"78:4f:43:9c:3c:8d","type":"","mtu":"1500","metric":"0","ipackets":"7071178","opackets":"6408775","ibytes":"1481473778","obytes":"1633061382","ierrors":"0","oerrors":"0","idrops":"0","odrops":"0","last_change":"1501077680","description":"","manufacturer":"","connection_id":"","connection_status":"","enabled":"","physical_adapter":"","speed":"","dhcp_enabled":"","dhcp_lease_expires":"","dhcp_lease_obtained":"","dhcp_server":"","dns_domain":"","dns_domain_suffix_search_order":"","dns_host_name":"","dns_server_search_order":"","interface":"en0","address":"192.168.1.135","mask":"255.255.255.0","broadcast":"192.168.1.255","point_to_point":"","type":""}],"detail_query_os_version":[{"name":"Mac OS X","version":"10.12.6","major":"10","minor":"12","patch":"6","build":"16G29","platform":"darwin","platform_like":"darwin","codename":""}],"detail_query_osquery_flags":[{"name":"config_refresh","value":"10"},{"name":"distributed_interval","value":"10"},{"name":"logger_tls_period","value":"10"}],"detail_query_osquery_info":[{"pid":"75680","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","instance_id":"89f267fa-9a17-4a73-87d6-05197491f2e8","version":"2.5.0","config_hash":"960121acb9bcbb136ce49fe77000752f237fd0dd","config_valid":"1","extensions":"active","build_platform":"darwin","build_distro":"10.12","start_time":"1502371429","watcher":"75678"}],"detail_query_system_info":[{"hostname":"Johns-MacBook-Pro.local","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","cpu_type":"x86_64h","cpu_subtype":"Intel x86-64h Haswell","cpu_brand":"Intel(R) Core(TM) i7-6820HQ CPU @ 2.70GHz","cpu_physical_cores":"4","cpu_logical_cores":"8","physical_memory":"17179869184","hardware_vendor":"Apple Inc.","hardware_model":"MacBookPro13,3","hardware_version":"1.0","hardware_serial":"C02SP067H040","computer_name":"","local_hostname":"Johns-MacBook-Pro"}],"detail_query_uptime":[{"days":"21","hours":"18","minutes":"44","seconds":"38","total_seconds":"1881878"}],"label_query_6":[{"1":"1"}],"label_query_9":"","detail_query_network_interface":[{"interface":"en0","mac":"78:4f:43:9c:3c:8d","type":"","mtu":"1500","metric":"0","ipackets":"7071216","opackets":"6408814","ibytes":"1481486677","obytes":"1633066361","ierrors":"0","oerrors":"0","idrops":"0","odrops":"0","last_change":"1501077688","description":"","manufacturer":"","connection_id":"","connection_status":"","enabled":"","physical_adapter":"","speed":"","dhcp_enabled":"","dhcp_lease_expires":"","dhcp_lease_obtained":"","dhcp_server":"","dns_domain":"","dns_domain_suffix_search_order":"","dns_host_name":"","dns_server_search_order":"","interface":"en0","address":"192.168.1.135","mask":"255.255.255.0","broadcast":"192.168.1.255","point_to_point":"","type":""}],"detail_query_os_version":[{"name":"Mac OS X","version":"10.12.6","major":"10","minor":"12","patch":"6","build":"16G29","platform":"darwin","platform_like":"darwin","codename":""}],"detail_query_osquery_flags":[{"name":"config_refresh","value":"10"},{"name":"distributed_interval","value":"10"},{"name":"logger_tls_period","value":"10"}],"detail_query_osquery_info":[{"pid":"75680","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","instance_id":"89f267fa-9a17-4a73-87d6-05197491f2e8","version":"2.5.0","config_hash":"960121acb9bcbb136ce49fe77000752f237fd0dd","config_valid":"1","extensions":"active","build_platform":"darwin","build_distro":"10.12","start_time":"1502371429","watcher":"75678"}],"detail_query_system_info":[{"hostname":"Johns-MacBook-Pro.local","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","cpu_type":"x86_64h","cpu_subtype":"Intel x86-64h Haswell","cpu_brand":"Intel(R) Core(TM) i7-6820HQ CPU @ 2.70GHz","cpu_physical_cores":"4","cpu_logical_cores":"8","physical_memory":"17179869184","hardware_vendor":"Apple Inc.","hardware_model":"MacBookPro13,3","hardware_version":"1.0","hardware_serial":"C02SP067H040","computer_name":"","local_hostname":"Johns-MacBook-Pro"}],"detail_query_uptime":[{"days":"21","hours":"18","minutes":"44","seconds":"49","total_seconds":"1881889"}],"label_query_6":[{"1":"1"}],"label_query_9":""},"statuses":{"detail_query_network_interface":"0","detail_query_os_version":"0","detail_query_osquery_flags":"0","detail_query_osquery_info":"0","detail_query_system_info":"0","detail_query_uptime":"0","label_query_6":"0","label_query_9":"0"}}"#;
+        const RAW_JSON_QUERY: &str = r#"{"queries":{"detail_query_network_interface":[{"interface":"en0","mac":"78:4f:43:9c:3c:8d","type":"","mtu":"1500","metric":"0","ipackets":"7071136","opackets":"6408727","ibytes":"1481456771","obytes":"1633052673","ierrors":"0","oerrors":"0","idrops":"0","odrops":"0","last_change":"1501077669","description":"","manufacturer":"","connection_id":"","connection_status":"","enabled":"","physical_adapter":"","speed":"","dhcp_enabled":"","dhcp_lease_expires":"","dhcp_lease_obtained":"","dhcp_server":"","dns_domain":"","dns_domain_suffix_search_order":"","dns_host_name":"","dns_server_search_order":"","interface":"en0","address":"192.168.1.135","mask":"255.255.255.0","broadcast":"192.168.1.255","point_to_point":"","type":""}],"detail_query_os_version":[{"name":"Mac OS X","version":"10.12.6","major":"10","minor":"12","patch":"6","build":"16G29","platform":"darwin","platform_like":"darwin","codename":""}],"detail_query_osquery_flags":[{"name":"config_refresh","value":"10"},{"name":"distributed_interval","value":"10"},{"name":"logger_tls_period","value":"10"}],"detail_query_osquery_info":[{"pid":"75680","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","instance_id":"89f267fa-9a17-4a73-87d6-05197491f2e8","version":"2.5.0","config_hash":"960121acb9bcbb136ce49fe77000752f237fd0dd","config_valid":"1","extensions":"active","build_platform":"darwin","build_distro":"10.12","start_time":"1502371429","watcher":"75678"}],"detail_query_system_info":[{"hostname":"Johns-MacBook-Pro.local","uuid":"DE56C776-2F5A-56DF-81C7-F64EE1BBEC8C","cpu_type":"x86_64h","cpu_subtype":"Intel x86-64h Haswell","cpu_brand":"Intel(R) Core(TM) i7-6820HQ CPU @ 2.70GHz","cpu_physical_cores":"4","cpu_logical_cores":"8","physical_memory":"17179869184","hardware_vendor":"Apple Inc.","hardware_model":"MacBookPro13,3","hardware_version":"1.0","hardware_serial":"C02SP067H040","computer_name":"","local_hostname":"Johns-MacBook-Pro"}],"detail_query_uptime":[{"days":"21","hours":"18","minutes":"29","seconds":"18","total_seconds":"1893778"}]},"statuses":{"detail_query_network_interface":0,"detail_query_os_version":0,"detail_query_osquery_flags":0,"detail_query_osquery_info":0,"detail_query_system_info":0,"detail_query_uptime":0,"detail_query_schedule":0}}"#;
         let queries: QueriesResponse = serde_json::from_str(RAW_JSON_QUERY).unwrap();
         let resp: result::Result<Vec<QueryResponse>, _> = queries.try_into();
         assert!(resp.is_ok());
@@ -444,32 +606,32 @@ mod tests {
         // should_fail, data, expected
         let test_cases = vec![
             // from str
-            (false, r#"{"status": "0"}"#, OsqueryStatus(0)),
-            (false, r#"{"status": "1"}"#, OsqueryStatus(1)),
-            (false, r#"{"status": "000"}"#, OsqueryStatus(0)),
-            (false, r#"{"status": "-12"}"#, OsqueryStatus(-12)),
+            (false, r#"{"status": "0"}"#, OsqueryInt(0)),
+            (false, r#"{"status": "1"}"#, OsqueryInt(1)),
+            (false, r#"{"status": "000"}"#, OsqueryInt(0)),
+            (false, r#"{"status": "-12"}"#, OsqueryInt(-12)),
             // from int
-            (false, r#"{"status": 0}"#, OsqueryStatus(0)),
-            (false, r#"{"status": 1}"#, OsqueryStatus(1)),
-            (false, r#"{"status": -12}"#, OsqueryStatus(-12)),
+            (false, r#"{"status": 0}"#, OsqueryInt(0)),
+            (false, r#"{"status": 1}"#, OsqueryInt(1)),
+            (false, r#"{"status": -12}"#, OsqueryInt(-12)),
             // should fail
-            (true, r#"foo"#, OsqueryStatus(0)),
-            (true, r#"{"status": ""}"#, OsqueryStatus(0)),
-            (true, r#"{"status": 000}"#, OsqueryStatus(0)),
+            (true, r#"foo"#, OsqueryInt(0)),
+            (true, r#"{"status": ""}"#, OsqueryInt(0)),
+            (true, r#"{"status": 000}"#, OsqueryInt(0)),
             (
                 true,
                 r#"{"status": "9223372036854775807887766554433"}"#,
-                OsqueryStatus(0),
+                OsqueryInt(0),
             ),
             (
                 true,
                 r#"{"status": 9223372036854775807887766554433}"#,
-                OsqueryStatus(0),
+                OsqueryInt(0),
             ),
-            (true, r#"{"status": []}"#, OsqueryStatus(0)),
+            (true, r#"{"status": []}"#, OsqueryInt(0)),
         ];
         for (should_err, data, expected) in test_cases {
-            let status: result::Result<BTreeMap<String, OsqueryStatus>, _> =
+            let status: result::Result<BTreeMap<String, OsqueryInt>, _> =
                 serde_json::from_str(data);
             match status {
                 Ok(s) => {
@@ -482,7 +644,7 @@ mod tests {
                 }
             }
         }
-        let stat: i64 = OsqueryStatus(12).into();
+        let stat: i64 = OsqueryInt(12).into();
         assert_eq!(12, stat);
     }
 }
