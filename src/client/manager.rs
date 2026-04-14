@@ -275,6 +275,7 @@ impl ExtensionManager for ExtensionManagerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[cfg(unix)]
     pub static TEST_SOCKET: &str = "/var/osquery/osquery.em";
@@ -282,12 +283,16 @@ mod tests {
     pub static TEST_SOCKET: &str = r"\\.\pipe\osquery.em";
 
     #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
     fn query_rows() {
         let mut client = ExtensionManagerClient::new_with_path(TEST_SOCKET).unwrap();
         client.query_rows("SELECT * FROM users").unwrap();
     }
 
     #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
     fn query_row() {
         let mut client = ExtensionManagerClient::new_with_path(TEST_SOCKET).unwrap();
         client.query_row("SELECT * FROM users limit 1").unwrap();

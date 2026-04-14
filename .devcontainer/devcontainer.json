@@ -1,0 +1,37 @@
+{
+  "name": "osquery-rs Dev Container",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "shutdownAction": "stopCompose",
+  "postCreateCommand": "cargo fetch",
+  "postStartCommand": ".devcontainer/scripts/start-osqueryd.sh",
+  "containerEnv": {
+    "RUST_BACKTRACE": "1",
+    "OSQUERY_EXTENSION_SOCKET": "/var/osquery/osquery.em",
+    "OSQUERY_DB_DIR": "/var/osquery/osquery.db",
+    "OSQUERY_LOG_DIR": "/var/log/osquery"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "editor.formatOnSave": true,
+        "rust-analyzer.check.command": "clippy",
+        "chat.tools.terminal.autoApprove": {
+          "cargo build": true,
+          "cargo test": true,
+          "cargo fmt": true,
+          "cargo clippy": true,
+          "osqueryi": true,
+          "osqueryd": true
+        }
+      },
+      "extensions": [
+        "ms-azuretools.vscode-containers",
+        "GitHub.copilot",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}

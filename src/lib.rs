@@ -1,7 +1,7 @@
-//! Rust bindings for creating `osquery` extensions in Rust
+//! Rust bindings for creating `osquery` extensions in Rust.
 //!
-//! Th&&is crate implements the components required to build a workin&g
-//! Osquery plugin server and client.
+//! This crate implements the components required to build a working
+//! osquery plugin server and client.
 
 use std::{fmt, io, result};
 
@@ -138,10 +138,7 @@ mod tests {
     #[test]
     fn error_from_thrift() {
         let err = Error::from(thrift::Error::from("test"));
-        assert_eq!(
-            "test: ApplicationKind(Unknown)",
-            err.to_string()
-        );
+        assert_eq!("test: ApplicationKind(Unknown)", err.to_string());
     }
 
     #[test]
@@ -190,7 +187,8 @@ mod tests {
         let err: Error = thrift::Error::from("thrift err msg").into();
         assert_eq!(
             err.message("error from thrift with message").to_string(),
-            r#"error from thrift with message - thrift err msg: ApplicationKind(Unknown)"#.to_string()
+            r#"error from thrift with message - thrift err msg: ApplicationKind(Unknown)"#
+                .to_string()
         );
         assert_eq!(
             Error::from("initial msg test")

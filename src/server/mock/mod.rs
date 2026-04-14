@@ -35,7 +35,10 @@ impl OsqueryPlugin for MockPlugin {
     }
 
     fn call(&mut self, _req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
-        osquery::ExtensionResponse::new(osquery::ExtensionStatus::new(STATUS_CODE, None, None), None)
+        osquery::ExtensionResponse::new(
+            osquery::ExtensionStatus::new(STATUS_CODE, None, None),
+            None,
+        )
     }
 
     fn shutdown(&self) {

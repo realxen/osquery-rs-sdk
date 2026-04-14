@@ -283,6 +283,7 @@ mod tests {
     use crate::osquery::ExtensionSyncHandler;
     use crate::server::mock;
     use crate::server::RegistryName;
+    use serial_test::serial;
 
     #[cfg(unix)]
     const SOCKET: &str = "/var/osquery/osquery.em";
@@ -295,7 +296,25 @@ mod tests {
         server
     }
 
+    fn wait_for_extension_server<P: AsRef<std::path::Path>>(path: P) {
+        for _ in 0..50 {
+            if let Ok(mut client) = client::ExtensionManagerClient::new_with_path(&path) {
+                if client.ping().is_ok() {
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        panic!(
+            "timed out waiting for extension server at {}",
+            path.as_ref().display()
+        );
+    }
+
     #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
     fn register_plugin() {
         let name = "test_plugin";
         let plugin = mock::MockPlugin::new(name, RegistryName::Table);
@@ -313,6 +332,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
     fn gen_registry() {
         let name = "test_plugin";
         let plugin = mock::MockPlugin::new(name, RegistryName::Table);
@@ -331,6 +352,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
     fn register_extension() {
         let name = "test_plugin";
         let plugin = mock::MockPlugin::new(name, RegistryName::Table);
@@ -363,20 +386,19 @@ mod tests {
     // }
 
     #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
     fn start() {
         let mut server = init_server();
         let (tx, _) = std::sync::mpsc::sync_channel(1);
         server.start(tx).unwrap();
-        // wait for the server to start
-        std::thread::sleep(std::time::Duration::from_millis(100));
         let listen_path = server.listen_path.clone().unwrap();
-        client::ExtensionManagerClient::new_with_path(&listen_path)
-            .unwrap()
-            .ping()
-            .unwrap();
+        wait_for_extension_server(&listen_path);
     }
 
     #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
     fn shutdown() {
         let mut server = init_server();
         let (tx, _) = std::sync::mpsc::sync_channel(1);
@@ -387,9 +409,15 @@ mod tests {
         server.uuid = uuid;
         server.start(tx).unwrap();
 
-        // // wait for the server to start
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(server.shutdown().is_ok(), "shutdown should be ok");
+        let listen_path = server.listen_path.clone().unwrap();
+        wait_for_extension_server(&listen_path);
+
+        let shutdown_err = server.shutdown().err();
+        assert!(
+            shutdown_err.is_none(),
+            "shutdown should be ok: {:?}",
+            shutdown_err
+        );
     }
 
     #[test]

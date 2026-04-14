@@ -2,9 +2,8 @@
 name = "osquery-rs"
 version = "0.1.0"
 description = "Rust bindings for osquery."
-authors = ["AlphaGuard"]
-license = ""
-repository = ""
+readme = "README.md"
+authors = ["realxen <86901550+realxen@users.noreply.github.com>"]
 edition = "2021"
 rust-version = "1.61.0"
 
@@ -48,3 +47,6 @@ required-features = ["plugins"]
 name = "table"
 crate-type = ["bin"]
 required-features = ["plugins"]
+
+[dev-dependencies]
+serial_test = "3"
