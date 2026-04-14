@@ -370,33 +370,33 @@ impl ColumnDefinition {
     }
 
     /// Helper for defining columns containing strings.
-    pub fn text(name: &str) -> Self {
-        Self::new(name, ColumnType::Text, &[])
+    pub fn text(name: &str, opts: &[ColumnOpt]) -> Self {
+        Self::new(name, ColumnType::Text, opts)
     }
 
     /// Helper for defining columns containing integers.
-    pub fn integer(name: &str) -> Self {
-        Self::new(name, ColumnType::Integer, &[])
+    pub fn integer(name: &str, opts: &[ColumnOpt]) -> Self {
+        Self::new(name, ColumnType::Integer, opts)
     }
 
     /// Helper for defining columns containing big integers.
-    pub fn big_int(name: &str) -> Self {
-        Self::new(name, ColumnType::BigInt, &[])
+    pub fn big_int(name: &str, opts: &[ColumnOpt]) -> Self {
+        Self::new(name, ColumnType::BigInt, opts)
     }
 
     /// Helper for defining columns containing unsigned big integers.
-    pub fn unsigned_big_int(name: &str) -> Self {
-        Self::new(name, ColumnType::UnsignedBigInt, &[])
+    pub fn unsigned_big_int(name: &str, opts: &[ColumnOpt]) -> Self {
+        Self::new(name, ColumnType::UnsignedBigInt, opts)
     }
 
     /// Helper for defining columns containing floating point values.
-    pub fn double(name: &str) -> Self {
-        Self::new(name, ColumnType::Double, &[])
+    pub fn double(name: &str, opts: &[ColumnOpt]) -> Self {
+        Self::new(name, ColumnType::Double, opts)
     }
 
     /// Helper for defining columns containing blobs.
-    pub fn blob(name: &str) -> Self {
-        Self::new(name, ColumnType::Blob, &[])
+    pub fn blob(name: &str, opts: &[ColumnOpt]) -> Self {
+        Self::new(name, ColumnType::Blob, opts)
     }
 
     /// Returns the bitmask representation of the column options.
@@ -580,10 +580,10 @@ mod tests {
         let mut plugin = TablePlugin::new(
             "mock",
             vec![
-                ColumnDefinition::text("text"),
-                ColumnDefinition::integer("integer"),
-                ColumnDefinition::big_int("big_int"),
-                ColumnDefinition::double("double"),
+                ColumnDefinition::text("text", &[]),
+                ColumnDefinition::integer("integer", &[]),
+                ColumnDefinition::big_int("big_int", &[]),
+                ColumnDefinition::double("double", &[]),
             ],
             |qctx| {
                 called_query_ctx = qctx;
@@ -659,10 +659,10 @@ mod tests {
         let mut plugin = TablePlugin::new(
             "mock",
             vec![
-                ColumnDefinition::text("text"),
-                ColumnDefinition::integer("integer"),
-                ColumnDefinition::big_int("big_int"),
-                ColumnDefinition::double("double"),
+                ColumnDefinition::text("text", &[]),
+                ColumnDefinition::integer("integer", &[]),
+                ColumnDefinition::big_int("big_int", &[]),
+                ColumnDefinition::double("double", &[]),
             ],
             |_| {
                 called += 1;
@@ -915,7 +915,7 @@ mod tests {
     #[test]
     fn column_options_bitmask() {
         // Option bitmask values: Index=1, Required=2, Additional=4, Optimized=8, Hidden=16
-        assert_eq!(0, ColumnDefinition::text("c").options());
+        assert_eq!(0, ColumnDefinition::text("c", &[]).options());
         assert_eq!(
             1,
             ColumnDefinition::new("c", ColumnType::Text, &[index_column()]).options()
@@ -971,7 +971,7 @@ mod tests {
                     ColumnType::Integer,
                     &[required_column(), index_column()],
                 ),
-                ColumnDefinition::text("plain"),
+                ColumnDefinition::text("plain", &[]),
             ],
             |_| Ok(vec![]),
         );
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn column_description_and_notes() {
-        let col = ColumnDefinition::text("c")
+        let col = ColumnDefinition::text("c", &[])
             .with_description("A description")
             .with_notes("Some notes");
         assert_eq!(col.description, "A description");
@@ -1027,7 +1027,7 @@ mod tests {
             "test_table",
             vec![
                 ColumnDefinition::new("id", ColumnType::Integer, &[index_column()]),
-                ColumnDefinition::text("name").with_description("The name"),
+                ColumnDefinition::text("name", &[]).with_description("The name"),
             ],
             |_| Ok(vec![]),
             vec![

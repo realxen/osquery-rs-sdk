@@ -52,10 +52,10 @@ fn main() -> Result<()> {
 
 fn example_columns() -> Vec<ColumnDefinition> {
     vec![
-        ColumnDefinition::text("hello"),
-        ColumnDefinition::integer("integer"),
-        ColumnDefinition::big_int("big_int"),
-        ColumnDefinition::double("double"),
+        ColumnDefinition::text("hello", &[]),
+        ColumnDefinition::integer("integer", &[]),
+        ColumnDefinition::big_int("big_int", &[]),
+        ColumnDefinition::double("double", &[]),
     ]
 }
 
