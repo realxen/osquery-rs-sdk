@@ -10,7 +10,7 @@ type Config = BTreeMap<String, String>;
 
 /// Osquery configuration plugin. That implement the OsqueryPlugin interface
 /// * [`GenFunc`]: returns a map that should use the source name as key, and the config
-/// JSON as values.
+///   JSON as values.
 pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
     name: Arc<String>,
     registry: RegistryName,
@@ -20,7 +20,7 @@ pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
 impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
     /// creates a ConfigPlugin plugin.
     /// * [`GenFunc`]: should return a [`Result<BTreeMap<String, String>>`]
-    /// that uses the source name as key, and the config JSON as values.
+    ///   that uses the source name as key, and the config JSON as values.
     pub fn new(name: &str, generate: GenFunc) -> Box<Self> {
         Box::new(Self {
             name: Arc::from(name.to_string()),
@@ -45,7 +45,7 @@ impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigP
                 // let configs = (self.generate)();
                 match (self.generate)() {
                     Ok(conf) => osquery::ExtensionResponse::new(
-                        osquery::ExtensionStatus::new(0, String::from("Ok"), None),
+                        osquery::ExtensionStatus::new(0, String::from("OK"), None),
                         osquery::ExtensionPluginResponse::from([conf]),
                     ),
                     Err(err) => osquery::ExtensionResponse::new(
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn config_plugin() {
         let mut called = false;
-        let status_ok = osquery::ExtensionStatus::new(0, String::from("Ok"), None);
+        let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
 
         let mut plugin = ConfigPlugin::new("mock", || {
             called = true;

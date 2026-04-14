@@ -21,7 +21,7 @@ pub type QueriesResquestFunc = fn() -> Result<QueriesResquest>;
 /// as the key.
 pub type QueriesResponseFunc = fn(Vec<QueryResponse>) -> Result<()>;
 
-//// Contains the information about which queries the
+/// Contains the information about which queries the
 /// distributed system should run.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct QueriesResquest {
@@ -105,16 +105,14 @@ impl<'de> Deserialize<'de> for OsqueryStatus {
             // osquery < v3.0 with stringy types
             Value::String(s) if !s.is_empty() => {
                 let op = s.parse::<i64>().map_err(de::Error::custom)?;
-                OsqueryStatus::try_from(op)
-                    .map_err(|_| de::Error::custom(format!("invalid value {}", op)))
+                Ok(OsqueryStatus::from(op))
             }
             // osquery > v3.0 with strong types
             Value::Number(n) if n.is_i64() => {
                 let op = n
                     .as_i64()
                     .ok_or_else(|| de::Error::custom("expected int"))?;
-                OsqueryStatus::try_from(op)
-                    .map_err(|_| de::Error::custom(format!("invalid value {}", op)))
+                Ok(OsqueryStatus::from(op))
             }
             value => Err(de::Error::custom(format!(
                 "invalid value {}, expected int",
@@ -223,7 +221,7 @@ impl OsqueryPlugin for DistributedPlugin {
 
         match result {
             Ok(resp) => osquery::ExtensionResponse::new(
-                osquery::ExtensionStatus::new(0, String::from("Ok"), None),
+                osquery::ExtensionStatus::new(0, String::from("OK"), None),
                 resp,
             ),
             Err(err) => {
@@ -240,7 +238,7 @@ mod tests {
 
     #[test]
     fn distributed_plugin() {
-        let status_ok = osquery::ExtensionStatus::new(0, String::from("Ok"), None);
+        let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
         let mut plugin = DistributedPlugin::new(
             "mock",
             move || {
@@ -316,7 +314,7 @@ mod tests {
 
     #[test]
     fn distributed_plugin_accelerate_discovery() {
-        let status_ok = osquery::ExtensionStatus::new(0, String::from("Ok"), None);
+        let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
         let mut plugin = DistributedPlugin::new(
             "mock",
             move || {

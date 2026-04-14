@@ -70,7 +70,7 @@ impl ExtensionManagerServer {
     pub fn register_plugin(&mut self, plugin: Box<dyn OsqueryPlugin>) -> Result<()> {
         self.registry
             .try_lock()
-            .map_err(|_| "cloud not lock thread register plugin error")?
+            .map_err(|_| "could not lock thread register plugin error")?
             .entry(format!("{}", plugin.registry_name()))
             .or_insert_with(BTreeMap::new)
             .entry(plugin.name())
@@ -87,9 +87,7 @@ impl ExtensionManagerServer {
             .map_err(|_| "thread lock error generating osquery extension registry")?;
 
         for (reg_name, plugins) in registry.iter_mut() {
-            let routes = ext_registry
-                .entry(reg_name.clone())
-                .or_insert(osquery::ExtensionRouteTable::new());
+            let routes = ext_registry.entry(reg_name.clone()).or_default();
             for (plug_name, plugin) in plugins {
                 routes
                     .entry(plug_name.to_string())
@@ -167,18 +165,16 @@ impl ExtensionManagerServer {
         let mut client = self
             .osquery_client
             .try_lock()
-            .map_err(|_| "cloud not lock osquery client error")?;
+            .map_err(|_| "could not lock osquery client error")?;
 
         match client.deregister_extension(uuid) {
             Err(err) => Err(Error::from(err).message(&format!("deregistering extension {}", uuid))),
-            Ok(res) if res.code.unwrap_or_default() != 0 => {
-                return Err(format!(
-                    "status {} deregistering extension: {}",
-                    res.code.unwrap_or_default(),
-                    res.message.unwrap_or_default()
-                )
-                .into())
-            }
+            Ok(res) if res.code.unwrap_or_default() != 0 => Err(format!(
+                "status {} deregistering extension: {}",
+                res.code.unwrap_or_default(),
+                res.message.unwrap_or_default()
+            )
+            .into()),
             Ok(_) => client.shutdown().map_err(Error::from),
         }
     }
@@ -240,39 +236,31 @@ impl osquery::ExtensionSyncHandler for ExtensionServerHandler {
         match self
             .registry
             .try_lock()
-            .map_err(|_| "cloud not lock register error")?
+            .map_err(|_| "could not lock register error")?
             .get_mut(&registry)
         {
             Some(subreg) => match subreg.get_mut(&item) {
                 Some(plugin) => Ok(plugin.call(request)),
-                None => {
-                    return Ok(osquery::ExtensionResponse::new(
-                        osquery::ExtensionStatus::new(
-                            1,
-                            format!("Unknown registry item: {}", item),
-                            None,
-                        ),
-                        None,
-                    ))
-                }
-            },
-            None => {
-                return Ok(osquery::ExtensionResponse::new(
+                None => Ok(osquery::ExtensionResponse::new(
                     osquery::ExtensionStatus::new(
                         1,
-                        format!("Unknown registry: {}", registry),
+                        format!("Unknown registry item: {}", item),
                         None,
                     ),
                     None,
-                ))
-            }
+                )),
+            },
+            None => Ok(osquery::ExtensionResponse::new(
+                osquery::ExtensionStatus::new(1, format!("Unknown registry: {}", registry), None),
+                None,
+            )),
         }
     }
 
     fn handle_shutdown(&self) -> thrift::Result<()> {
         self.shutdown
             .send(None)
-            .map_err(|_| "cloud not send shutdown signal".into())
+            .map_err(|_| "could not send shutdown signal".into())
     }
 }
 

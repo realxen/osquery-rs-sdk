@@ -96,7 +96,7 @@ impl ExtensionManagerClient {
     pub fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread in ping")?
+            .map_err(|_| "could not lock thread in ping")?
             .ping()
     }
 
@@ -109,7 +109,7 @@ impl ExtensionManagerClient {
     ) -> TResult<osquery::ExtensionResponse> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread in call")?
+            .map_err(|_| "could not lock thread in call")?
             .call(registry, item, request)
     }
 
@@ -117,7 +117,7 @@ impl ExtensionManagerClient {
     pub fn shutdown(&mut self) -> TResult<()> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread in shutdown")?
+            .map_err(|_| "could not lock thread in shutdown")?
             .shutdown()
     }
 
@@ -125,7 +125,7 @@ impl ExtensionManagerClient {
     pub fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread getting extensions")?
+            .map_err(|_| "could not lock thread getting extensions")?
             .extensions()
     }
 
@@ -133,7 +133,7 @@ impl ExtensionManagerClient {
     pub fn options(&mut self) -> TResult<osquery::InternalOptionList> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread getting options")?
+            .map_err(|_| "could not lock thread getting options")?
             .options()
     }
 
@@ -145,7 +145,7 @@ impl ExtensionManagerClient {
     ) -> TResult<osquery::ExtensionStatus> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread registering extension")?
+            .map_err(|_| "could not lock thread registering extension")?
             .register_extension(info, registry)
     }
 
@@ -156,7 +156,7 @@ impl ExtensionManagerClient {
     ) -> TResult<osquery::ExtensionStatus> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread deregister extension")?
+            .map_err(|_| "could not lock thread deregister extension")?
             .deregister_extension(uuid)
     }
 
@@ -165,7 +165,7 @@ impl ExtensionManagerClient {
     pub fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread for query")?
+            .map_err(|_| "could not lock thread for query")?
             .query(sql)
     }
 
@@ -173,7 +173,7 @@ impl ExtensionManagerClient {
     pub fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
         self.client
             .lock()
-            .map_err(|_| "cloud not lock thread for columns query")?
+            .map_err(|_| "could not lock thread for columns query")?
             .get_query_columns(sql)
     }
 
@@ -184,7 +184,7 @@ impl ExtensionManagerClient {
         let res = self
             .client
             .lock()
-            .map_err(|_| "cloud not lock thread in query")?
+            .map_err(|_| "could not lock thread in query")?
             .query(String::from(sql))
             .map_err(|err| format!("transport TError in query: {}", err))?;
 

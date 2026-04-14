@@ -57,5 +57,10 @@ name = "table"
 crate-type = ["bin"]
 required-features = ["plugins"]
 
+[[example]]
+name = "distributed"
+crate-type = ["bin"]
+required-features = ["plugins"]
+
 [dev-dependencies]
 serial_test = "3"

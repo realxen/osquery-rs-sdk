@@ -142,8 +142,8 @@ mod tests {
     use crate::{client, osquery};
     use std::path::PathBuf;
 
-        // Use a unique socket per test case to avoid cross-test interference.
-        fn init_server(name: &str) -> PathBuf {
+    // Use a unique socket per test case to avoid cross-test interference.
+    fn init_server(name: &str) -> PathBuf {
         #[cfg(unix)]
         let socket: PathBuf = format!("/tmp/osquery_rs_sdk.server.{}.test.em", name).into();
         #[cfg(windows)]
