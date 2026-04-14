@@ -1,7 +1,7 @@
 //!  Create an osquery table plugin.
 
 use crate::{osquery, OsqueryPlugin, RegistryName, Result};
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt, result, sync::Arc};
 
@@ -16,28 +16,105 @@ pub struct TablePlugin<GenFunc: FnMut(QueryContext) -> Result<Table>> {
     registry: RegistryName,
     columns: Vec<ColumnDefinition>,
     generate: GenFunc,
+    description: String,
+    url: String,
+    notes: String,
+    examples: Vec<String>,
+    platforms: Vec<Platform>,
+}
+
+/// Platform names for table spec generation.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum Platform {
+    #[serde(rename = "darwin")]
+    Darwin,
+    #[serde(rename = "windows")]
+    Windows,
+    #[serde(rename = "linux")]
+    Linux,
+}
+
+/// Returns the platform for the current OS.
+fn default_platform() -> Vec<Platform> {
+    if cfg!(target_os = "macos") {
+        vec![Platform::Darwin]
+    } else if cfg!(target_os = "windows") {
+        vec![Platform::Windows]
+    } else if cfg!(target_os = "linux") {
+        vec![Platform::Linux]
+    } else {
+        vec![]
+    }
+}
+
+/// Functional option for configuring a [`TablePlugin`].
+pub enum TableOpt {
+    /// Sets the table description for spec generation.
+    Description(String),
+    /// Sets the table URL for spec generation.
+    Url(String),
+    /// Sets the table notes for spec generation.
+    Notes(String),
+    /// Adds an example query for spec generation.
+    Example(String),
+    /// Overrides the default platform detection.
+    Platforms(Vec<Platform>),
+}
+
+/// Osquery table spec, compatible with osquery spec files. Can be serialized to JSON.
+#[derive(Debug, Serialize)]
+pub struct OsqueryTableSpec {
+    pub name: String,
+    pub description: String,
+    pub url: String,
+    pub platforms: Vec<Platform>,
+    pub evented: bool,
+    pub cacheable: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
+    pub columns: Vec<ColumnDefinition>,
 }
 
 // ColumnType is a strongly typed representation of the data type string for a
 // column definition. The named constants should be used.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum ColumnType {
+    Unknown,
     Text,
     Integer,
     BigInt,
+    #[serde(rename = "UNSIGNED BIGINT")]
+    UnsignedBigInt,
     Double,
+    Blob,
 }
 
 // The following column types are defined in osquery tables.h.
 impl fmt::Display for ColumnType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
+            ColumnType::Unknown => write!(f, "UNKNOWN"),
             ColumnType::Text => write!(f, "TEXT"),
             ColumnType::Integer => write!(f, "INTEGER"),
             ColumnType::BigInt => write!(f, "BIGINT"),
+            ColumnType::UnsignedBigInt => write!(f, "UNSIGNED BIGINT"),
             ColumnType::Double => write!(f, "DOUBLE"),
+            ColumnType::Blob => write!(f, "BLOB"),
         }
+    }
+}
+
+impl Serialize for ColumnType {
+    fn serialize<S>(&self, serializer: S) -> result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Serialize as lowercase with spaces replaced by underscores (matches Go MarshalJSON).
+        let s = self.to_string().to_lowercase().replace(' ', "_");
+        serializer.serialize_str(&s)
     }
 }
 
@@ -225,57 +302,195 @@ impl TryFrom<i64> for Operator {
     }
 }
 
-// ColumnDefinition defines the relevant information for a column in a table plugin.
+/// ColumnDefinition defines the relevant information for a column in a table plugin.
+/// Name and Type are mandatory. Prefer using the type-specific helpers or `new` to create instances.
+#[derive(Clone, Debug, Serialize)]
 pub struct ColumnDefinition {
     name: String,
+    #[serde(rename = "type")]
     col_type: ColumnType,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    notes: String,
+    // Column options from osquery column.h
+    index: bool,
+    required: bool,
+    additional: bool,
+    optimized: bool,
+    hidden: bool,
+}
+
+/// Functional option for configuring a [`ColumnDefinition`].
+pub type ColumnOpt = fn(&mut ColumnDefinition);
+
+/// Sets the column as an index column. Can significantly change performance.
+pub fn index_column() -> ColumnOpt {
+    |cd| cd.index = true
+}
+
+/// Sets the column as required. SQLite will not process queries if a required column is missing.
+pub fn required_column() -> ColumnOpt {
+    |cd| cd.required = true
+}
+
+/// Sets the column as additional.
+pub fn additional_column() -> ColumnOpt {
+    |cd| cd.additional = true
+}
+
+/// Sets the column as optimized.
+pub fn optimized_column() -> ColumnOpt {
+    |cd| cd.optimized = true
+}
+
+/// Sets the column as hidden. This omits it from `select *` queries.
+pub fn hidden_column() -> ColumnOpt {
+    |cd| cd.hidden = true
 }
 
 impl ColumnDefinition {
-    // helper for defining columns containing strings.
+    /// Creates a new column definition with the given name, type, and options.
+    pub fn new(name: &str, col_type: ColumnType, opts: &[ColumnOpt]) -> Self {
+        let mut cd = Self {
+            name: name.to_string(),
+            col_type,
+            description: String::new(),
+            notes: String::new(),
+            index: false,
+            required: false,
+            additional: false,
+            optimized: false,
+            hidden: false,
+        };
+        for opt in opts {
+            opt(&mut cd);
+        }
+        cd
+    }
+
+    /// Helper for defining columns containing strings.
     pub fn text(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            col_type: ColumnType::Text,
-        }
+        Self::new(name, ColumnType::Text, &[])
     }
 
-    // helper for defining columns containing integers.
+    /// Helper for defining columns containing integers.
     pub fn integer(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            col_type: ColumnType::Integer,
-        }
+        Self::new(name, ColumnType::Integer, &[])
     }
 
-    // helper for defining columns containing big integers.
+    /// Helper for defining columns containing big integers.
     pub fn big_int(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            col_type: ColumnType::BigInt,
-        }
+        Self::new(name, ColumnType::BigInt, &[])
     }
 
-    // helper for defining columns containing floating point values.
+    /// Helper for defining columns containing unsigned big integers.
+    pub fn unsigned_big_int(name: &str) -> Self {
+        Self::new(name, ColumnType::UnsignedBigInt, &[])
+    }
+
+    /// Helper for defining columns containing floating point values.
     pub fn double(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            col_type: ColumnType::Double,
+        Self::new(name, ColumnType::Double, &[])
+    }
+
+    /// Helper for defining columns containing blobs.
+    pub fn blob(name: &str) -> Self {
+        Self::new(name, ColumnType::Blob, &[])
+    }
+
+    /// Returns the bitmask representation of the column options.
+    /// Values from osquery column.h: Index=1, Required=2, Additional=4, Optimized=8, Hidden=16.
+    pub fn options(&self) -> u8 {
+        let mut mask: u8 = 0;
+        if self.index {
+            mask |= 1;
         }
+        if self.required {
+            mask |= 2;
+        }
+        if self.additional {
+            mask |= 4;
+        }
+        if self.optimized {
+            mask |= 8;
+        }
+        if self.hidden {
+            mask |= 16;
+        }
+        mask
+    }
+
+    /// Sets the description for this column.
+    pub fn with_description(mut self, desc: &str) -> Self {
+        self.description = desc.to_string();
+        self
+    }
+
+    /// Sets the notes for this column.
+    pub fn with_notes(mut self, notes: &str) -> Self {
+        self.notes = notes.to_string();
+        self
     }
 }
 
 impl<GenFunc: FnMut(QueryContext) -> Result<Table>> TablePlugin<GenFunc> {
-    /// creates a ConfigPlugin plugin.
+    /// Creates a TablePlugin.
     /// * [`GenFunc`]: should return a [`Result<Table>`]
     ///   returns the rows generated by the table.
     pub fn new(name: &str, columns: Vec<ColumnDefinition>, generate: GenFunc) -> Box<Self> {
-        Box::new(Self {
+        Self::new_with_opts(name, columns, generate, vec![])
+    }
+
+    /// Creates a TablePlugin with functional options for spec generation.
+    pub fn new_with_opts(
+        name: &str,
+        columns: Vec<ColumnDefinition>,
+        generate: GenFunc,
+        opts: Vec<TableOpt>,
+    ) -> Box<Self> {
+        let mut plugin = Self {
             name: Arc::from(name.to_string()),
             registry: RegistryName::Table,
             columns,
             generate,
-        })
+            description: String::new(),
+            url: String::new(),
+            notes: String::new(),
+            examples: Vec::new(),
+            platforms: Vec::new(),
+        };
+
+        for opt in opts {
+            match opt {
+                TableOpt::Description(d) => plugin.description = d,
+                TableOpt::Url(u) => plugin.url = u,
+                TableOpt::Notes(n) => plugin.notes = n,
+                TableOpt::Example(e) => plugin.examples.push(e),
+                TableOpt::Platforms(p) => plugin.platforms = p,
+            }
+        }
+
+        if plugin.platforms.is_empty() {
+            plugin.platforms = default_platform();
+        }
+
+        Box::new(plugin)
+    }
+
+    /// Returns the table spec for spec generation.
+    pub fn spec(&self) -> OsqueryTableSpec {
+        OsqueryTableSpec {
+            name: self.name.to_string(),
+            description: self.description.clone(),
+            url: self.url.clone(),
+            platforms: self.platforms.clone(),
+            evented: false,
+            cacheable: false,
+            notes: self.notes.clone(),
+            examples: self.examples.clone(),
+            columns: self.columns.to_vec(),
+        }
     }
 }
 
@@ -297,7 +512,7 @@ impl<GenFunc: FnMut(QueryContext) -> Result<Table> + Send + Sync> OsqueryPlugin
                 (String::from("id"), String::from("column")),
                 (String::from("name"), col.name.clone()),
                 (String::from("type"), col.col_type.to_string()),
-                (String::from("op"), String::from("0")),
+                (String::from("op"), col.options().to_string()),
             ]));
         }
         routes
@@ -689,6 +904,155 @@ mod tests {
                 Err(_) => assert!(should_err),
             }
         }
+    }
+
+    #[test]
+    fn column_options_bitmask() {
+        // Option bitmask values: Index=1, Required=2, Additional=4, Optimized=8, Hidden=16
+        assert_eq!(0, ColumnDefinition::text("c").options());
+        assert_eq!(
+            1,
+            ColumnDefinition::new("c", ColumnType::Text, &[index_column()]).options()
+        );
+        assert_eq!(
+            2,
+            ColumnDefinition::new("c", ColumnType::Text, &[required_column()]).options()
+        );
+        assert_eq!(
+            4,
+            ColumnDefinition::new("c", ColumnType::Text, &[additional_column()]).options()
+        );
+        assert_eq!(
+            8,
+            ColumnDefinition::new("c", ColumnType::Text, &[optimized_column()]).options()
+        );
+        assert_eq!(
+            16,
+            ColumnDefinition::new("c", ColumnType::Text, &[hidden_column()]).options()
+        );
+        // Combined: Index + Hidden = 17
+        assert_eq!(
+            17,
+            ColumnDefinition::new("c", ColumnType::Text, &[index_column(), hidden_column()])
+                .options()
+        );
+        // All options = 31
+        assert_eq!(
+            31,
+            ColumnDefinition::new(
+                "c",
+                ColumnType::Text,
+                &[
+                    index_column(),
+                    required_column(),
+                    additional_column(),
+                    optimized_column(),
+                    hidden_column()
+                ]
+            )
+            .options()
+        );
+    }
+
+    #[test]
+    fn column_options_in_routes() {
+        let mut plugin = TablePlugin::new(
+            "mock",
+            vec![
+                ColumnDefinition::new("indexed", ColumnType::Text, &[index_column()]),
+                ColumnDefinition::new(
+                    "required",
+                    ColumnType::Integer,
+                    &[required_column(), index_column()],
+                ),
+                ColumnDefinition::text("plain"),
+            ],
+            |_| Ok(vec![]),
+        );
+        let routes = plugin.routes();
+        assert_eq!(routes[0].get("op").unwrap(), "1"); // Index
+        assert_eq!(routes[1].get("op").unwrap(), "3"); // Required + Index
+        assert_eq!(routes[2].get("op").unwrap(), "0"); // no options
+    }
+
+    #[test]
+    fn column_type_display() {
+        assert_eq!("UNKNOWN", ColumnType::Unknown.to_string());
+        assert_eq!("TEXT", ColumnType::Text.to_string());
+        assert_eq!("INTEGER", ColumnType::Integer.to_string());
+        assert_eq!("BIGINT", ColumnType::BigInt.to_string());
+        assert_eq!("UNSIGNED BIGINT", ColumnType::UnsignedBigInt.to_string());
+        assert_eq!("DOUBLE", ColumnType::Double.to_string());
+        assert_eq!("BLOB", ColumnType::Blob.to_string());
+    }
+
+    #[test]
+    fn column_type_json_serialization() {
+        assert_eq!(
+            r#""unknown""#,
+            serde_json::to_string(&ColumnType::Unknown).unwrap()
+        );
+        assert_eq!(
+            r#""text""#,
+            serde_json::to_string(&ColumnType::Text).unwrap()
+        );
+        assert_eq!(
+            r#""unsigned_bigint""#,
+            serde_json::to_string(&ColumnType::UnsignedBigInt).unwrap()
+        );
+        assert_eq!(
+            r#""blob""#,
+            serde_json::to_string(&ColumnType::Blob).unwrap()
+        );
+    }
+
+    #[test]
+    fn column_description_and_notes() {
+        let col = ColumnDefinition::text("c")
+            .with_description("A description")
+            .with_notes("Some notes");
+        assert_eq!(col.description, "A description");
+        assert_eq!(col.notes, "Some notes");
+    }
+
+    #[test]
+    fn table_spec_generation() {
+        let plugin = TablePlugin::new_with_opts(
+            "test_table",
+            vec![
+                ColumnDefinition::new("id", ColumnType::Integer, &[index_column()]),
+                ColumnDefinition::text("name").with_description("The name"),
+            ],
+            |_| Ok(vec![]),
+            vec![
+                TableOpt::Description("A test table".to_string()),
+                TableOpt::Url("https://example.com".to_string()),
+                TableOpt::Example("SELECT * FROM test_table".to_string()),
+                TableOpt::Platforms(vec![Platform::Darwin, Platform::Linux]),
+            ],
+        );
+        let spec = plugin.spec();
+        assert_eq!(spec.name, "test_table");
+        assert_eq!(spec.description, "A test table");
+        assert_eq!(spec.url, "https://example.com");
+        assert_eq!(spec.platforms, vec![Platform::Darwin, Platform::Linux]);
+        assert_eq!(spec.examples, vec!["SELECT * FROM test_table"]);
+        assert_eq!(spec.columns.len(), 2);
+        assert!(!spec.evented);
+        assert!(!spec.cacheable);
+
+        // Verify JSON serialization works
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains(r#""name":"test_table""#));
+        assert!(json.contains(r#""platforms":["darwin","linux"]"#));
+    }
+
+    #[test]
+    fn table_spec_default_platform() {
+        let plugin = TablePlugin::new("default_platform", vec![], |_| Ok(vec![]));
+        let spec = plugin.spec();
+        // Should have auto-detected platform
+        assert!(!spec.platforms.is_empty());
     }
 
     #[test]
