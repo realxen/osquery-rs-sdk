@@ -1,0 +1,62 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# --- Advisory checks (RustSec) -------------------------------------------
+[advisories]
+# Fail CI on any known vulnerability
+vulnerability = "deny"
+# Warn on unmaintained crates (don't block CI for this)
+unmaintained = "warn"
+# Warn on advisories that have been yanked
+yanked = "warn"
+# Warn on advisories with no fix available yet
+notice = "warn"
+
+# --- License policy -------------------------------------------------------
+[licenses]
+# Confidence threshold for license detection
+confidence-threshold = 0.8
+# Allow only these permissive licenses
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unlicense",
+    "BSL-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+# Treat unlicensed crates as errors
+unlicensed = "deny"
+
+# Some crates have non-standard license files; clarify them here
+[[licenses.clarify]]
+name = "unicode-ident"
+expression = "(MIT OR Apache-2.0) AND Unicode-DFS-2016"
+license-files = [{ path = "LICENSE-UNICODE", hash = 0x3fb01745 }]
+
+# --- Duplicate dependency checks ------------------------------------------
+[bans]
+# Warn on multiple versions of the same crate
+multiple-versions = "warn"
+# Deny wildcard dependencies in published crates
+wildcards = "deny"
+highlight = "all"
+
+# --- Source policy ---------------------------------------------------------
+[sources]
+# Only allow crates from crates.io
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

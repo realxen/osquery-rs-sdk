@@ -19,6 +19,7 @@ RUN set -eux; \
         procps \
         thrift-compiler; \
     rustup component add rustfmt clippy; \
+    cargo install cargo-audit cargo-deny cargo-nextest --locked; \
     case "${TARGETARCH}" in \
         amd64) osquery_arch="amd64" ;; \
         arm64) osquery_arch="arm64" ;; \
