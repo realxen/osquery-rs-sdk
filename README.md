@@ -16,6 +16,7 @@ A Rust SDK for building [osquery](https://osquery.io) extensions. Create custom 
 - **Client API** -- Connect to a running osquery instance and execute queries from Rust
 - **Mock support** -- First-class mocks for unit testing extensions without a live osquery
 - **Builder API** -- Configure extensions with version strings, timeouts, and ping intervals
+- **Signal handling** -- Built-in SIGINT/SIGTERM (Unix) and Ctrl+C (Windows) handling with `ShutdownHandle` for cross-thread shutdown
 - **Cross-platform** -- Unix sockets on Linux/macOS and named pipes on Windows
 - **Pure Rust** -- No C/C++ dependencies, built on the Thrift protocol
 - **Minimal footprint** -- Thin layer over osquery's extension API with zero unnecessary overhead
@@ -76,7 +77,10 @@ use osquery_rs_sdk::{ExtensionManagerServer, LogType, LoggerPlugin, Result};
 
 fn main() -> Result<()> {
     let mut server = ExtensionManagerServer::new("my_logger", "/var/osquery/osquery.em")?;
-    server.register_plugin(LoggerPlugin::new("my_logger", log_string))?;
+    server.register_plugin(
+        LoggerPlugin::new("my_logger", log_string)
+            .with_shutdown(|| { /* flush buffers, release resources */ }),
+    )?;
     server.run()
 }
 
@@ -94,7 +98,13 @@ use std::collections::BTreeMap;
 
 fn main() -> Result<()> {
     let mut server = ExtensionManagerServer::new("my_config", "/var/osquery/osquery.em")?;
-    server.register_plugin(ConfigPlugin::new("my_config", generate_config))?;
+    server.register_plugin(
+        ConfigPlugin::new("my_config", generate_config)
+            .with_gen_pack(|name, _value| {
+                // Resolve query packs on demand (e.g. fetch from a remote source)
+                Ok(format!(r#"{{"queries":{{"q1":{{"query":"SELECT 1;","interval":60}}}}}}"#))
+            }),
+    )?;
     server.run()
 }
 
@@ -104,6 +114,32 @@ fn generate_config() -> Result<BTreeMap<String, String>> {
         r#"{"schedule": {"info": {"query": "SELECT * FROM osquery_info;", "interval": 60}}}"#.into(),
     )]))
 }
+```
+
+### Signal handling and graceful shutdown
+
+Use `run_with_signal_handling()` to automatically handle SIGINT/SIGTERM (Unix) or Ctrl+C (Windows):
+
+```rust
+let mut server = ExtensionManagerServer::new("my_ext", "/var/osquery/osquery.em")?;
+// ... register plugins ...
+server.run_with_signal_handling()?;
+```
+
+For programmatic shutdown from another thread, use `ShutdownHandle`:
+
+```rust
+use osquery_rs_sdk::ExtensionManagerServer;
+
+let mut server = ExtensionManagerServer::new("my_ext", "/var/osquery/osquery.em")?;
+let handle = server.shutdown_handle();
+
+std::thread::spawn(move || {
+    // Trigger shutdown from any thread
+    handle.shutdown();
+});
+
+server.run()?;
 ```
 
 ### Use the builder for advanced configuration

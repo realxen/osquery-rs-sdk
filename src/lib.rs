@@ -65,7 +65,7 @@ pub type Result<T> = result::Result<T, Error>;
 /// Error type returned by all the plugins.
 ///
 /// This is a typed error enum that supports context chaining via the
-/// [`message`](Error::message) method, as well as automatic conversion
+/// [`context`](Error::context) method, as well as automatic conversion
 /// from Thrift and I/O errors.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

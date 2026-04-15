@@ -13,13 +13,13 @@ use std::{
     time,
 };
 
-/// Plugins represents a map of plugin name → plugin for a single registry.
+/// Map of plugin name → plugin for a single registry.
 type Plugins = HashMap<String, Arc<Mutex<Box<dyn OsqueryPlugin>>>>;
 
-/// Registry maps each `RegistryName` to its plugins.
+/// Maps each [`RegistryName`] to its plugins.
 type Registry = Arc<Mutex<HashMap<RegistryName, Plugins>>>;
 
-/// sender for server shutdown
+/// Sender half of the shutdown signal channel.
 type ShutdownSignal = mpsc::SyncSender<Option<Error>>;
 
 /// Default timeout for connecting to the osquery socket.
@@ -214,7 +214,7 @@ pub struct ExtensionManagerServer {
     server_stop_handle: Option<StopHandle>,
     #[allow(dead_code)] // Stored for forward-compatibility with transport-layer timeouts.
     timeout: time::Duration,
-    ping_interval: time::Duration, // How often to ping osquery server
+    ping_interval: time::Duration,
     shutdown_tx: ShutdownSignal,
     shutdown_rx: Option<mpsc::Receiver<Option<Error>>>,
 }
@@ -344,7 +344,6 @@ impl ExtensionManagerServer {
                 registry,
             )?;
 
-        // Check the registration status code
         let code = response.code.unwrap_or_default();
         if code != 0 {
             return Err(format!(
@@ -371,7 +370,6 @@ impl ExtensionManagerServer {
     /// All plugins should be registered with `register_plugin()` before calling `start()`.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn start(&mut self) -> Result<()> {
-        // will set the uuid and listen_path for the server
         self.register_extension()?;
 
         let listen_path = self
@@ -391,7 +389,6 @@ impl ExtensionManagerServer {
         self.server_stop_handle = Some(server.stop_handle());
 
         std::thread::spawn(move || {
-            // start listen for connections
             if let Err(err) = server.listen(&listen_path) {
                 let _ = shutdown.send(Some(err.into()));
             }
@@ -414,12 +411,10 @@ impl ExtensionManagerServer {
             .lock()
             .map_err(|_| "osquery client lock poisoned")?;
 
-        // Nothing to do if we never registered
         let Some(uuid) = self.uuid.take() else {
             return Ok(());
         };
 
-        // Deregister the extension if we have a client
         if let Some(client) = client_guard.as_mut() {
             match client.deregister_extension(uuid) {
                 Err(err) => {
@@ -441,12 +436,11 @@ impl ExtensionManagerServer {
             }
         }
 
-        // Stop the thrift server asynchronously
         if let Some(stop_handle) = self.server_stop_handle.take() {
             stop_handle.stop();
         }
 
-        // Shutdown the client if we own it (not if the caller provided one)
+        // Only close the client if we own it
         if self.client_ownership == ClientOwnership::Owned {
             if let Some(client) = client_guard.as_mut() {
                 client.close();
@@ -528,7 +522,6 @@ impl ExtensionManagerServer {
             }
         });
 
-        // wait for the shutdown signal and initiate shutdown.
         let stop_signal = rx.recv();
         self.shutdown().and_then(move |()| match stop_signal {
             Ok(Some(err)) => Err(err),
@@ -587,8 +580,7 @@ impl Drop for ExtensionManagerServer {
     }
 }
 
-/// `ExtensionServerHandler` handles requests to the extension server and is used
-/// as the `ExtensionSyncProcessor` for the thrift server
+/// Thrift request handler for the extension server.
 struct ExtensionServerHandler {
     registry: Registry,
     shutdown: ShutdownSignal,
@@ -805,7 +797,6 @@ mod tests {
     fn shutdown() {
         let mut server = init_server();
 
-        // Shutdown without uuid should succeed (idempotent -- no uuid means nothing to deregister)
         assert!(
             server.shutdown().is_ok(),
             "shutdown without uuid should succeed (idempotent)"
@@ -822,7 +813,6 @@ mod tests {
             "shutdown should be ok: {shutdown_err:?}"
         );
 
-        // Second shutdown should also succeed (idempotent)
         let shutdown_err = server.shutdown().err();
         assert!(
             shutdown_err.is_none(),
@@ -1037,7 +1027,6 @@ mod tests {
         let server = init_server();
         let handle = server.shutdown_handle();
         let handle2 = handle.clone();
-        // Both should be valid and not panic
         drop(handle2);
         drop(handle);
     }

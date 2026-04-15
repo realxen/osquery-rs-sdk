@@ -1,10 +1,20 @@
 //! Create an osquery configuration plugin.
 //!
-//! See <https://osquery.readthedocs.io/en/latest/development/config-plugins>/ for more.
+//! A config plugin provides osquery with its runtime configuration. The main
+//! entry point is the `generate` closure passed to [`ConfigPlugin::new`], which
+//! returns a map of source names to JSON config strings.
+//!
+//! Optionally, a config plugin can also generate **query packs** on demand via
+//! [`ConfigPlugin::with_gen_pack`]. osquery calls this when the main config
+//! references a pack that should be resolved by the extension. The callback
+//! receives the pack name and an opaque value string, and returns the pack
+//! configuration JSON.
+//!
+//! See <https://osquery.readthedocs.io/en/latest/development/config-plugins/> for more.
 use crate::{OsqueryPlugin, RegistryName, Result, osquery};
 use std::collections::BTreeMap;
 
-/// A map that should use the source name as key, and the config JSON as values.
+/// Source name → config JSON map.
 type Config = BTreeMap<String, String>;
 
 /// Callback for the `genPack` action. Receives the pack name and value,
@@ -13,8 +23,10 @@ type GenPackFn = Box<dyn FnMut(&str, &str) -> Result<String> + Send + Sync>;
 
 /// Osquery configuration plugin that implements the `OsqueryPlugin` interface.
 ///
-/// * [`GenFunc`]: returns a map that should use the source name as key, and the config
-///   JSON as values.
+/// * `GenFunc`: returns a map of source names to JSON config strings.
+///
+/// Use [`with_gen_pack`](Self::with_gen_pack) to add optional pack generation
+/// support for the `genPack` action.
 pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
     name: String,
     generate: GenFunc,
@@ -22,9 +34,9 @@ pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
 }
 
 impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
-    /// Create a `ConfigPlugin` plugin.
-    /// * [`GenFunc`]: should return a [`Result<BTreeMap<String, String>>`]
-    ///   that uses the source name as key, and the config JSON as values.
+    /// Create a new config plugin.
+    ///
+    /// `generate` returns a map of source names to config JSON strings.
     pub fn new(name: &str, generate: GenFunc) -> Self {
         Self {
             name: name.to_string(),
@@ -35,11 +47,25 @@ impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
 
     /// Add pack generation support to this config plugin.
     ///
-    /// The callback receives the pack name and value from osquery,
-    /// and should return the pack configuration JSON as a string.
+    /// The callback receives the pack `name` and `value` from osquery and
+    /// should return the pack configuration JSON as a string. osquery calls
+    /// this when the main config references a pack that should be resolved
+    /// by this extension (e.g. packs stored in a remote source, fetched
+    /// lazily by name).
     ///
     /// Without this, any `genPack` requests from osquery will return
     /// an "unknown action" error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use osquery_rs_sdk::{ConfigPlugin, Result};
+    /// # use std::collections::BTreeMap;
+    /// let plugin = ConfigPlugin::new("my_config", || Ok(BTreeMap::new()))
+    ///     .with_gen_pack(|name, _value| {
+    ///         Ok(format!(r#"{{"queries":{{"q1":{{"query":"SELECT 1;","interval":60}}}}}}"#))
+    ///     });
+    /// ```
     #[must_use]
     pub fn with_gen_pack(
         mut self,

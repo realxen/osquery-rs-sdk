@@ -5,7 +5,7 @@ use crate::{OsqueryPlugin, RegistryName, Result, osquery};
 use serde_json::Value;
 use std::{fmt, str::FromStr, sync::Mutex};
 
-// encodes the type of log osquery is outputting.
+/// The type of log osquery is outputting.
 #[non_exhaustive]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LogType {
@@ -62,8 +62,9 @@ pub struct LoggerPlugin<LogFunc: FnMut(LogType, &str) -> Result<()>> {
 }
 
 impl<LogFunc: FnMut(LogType, &str) -> Result<()>> LoggerPlugin<LogFunc> {
-    /// Create a `LoggerPlugin` plugin.
-    /// * [`LogFunc`]: should log the provided result string.
+    /// Create a new logger plugin.
+    ///
+    /// `log_fn` is called for each log entry with its [`LogType`] and message.
     pub fn new(name: &str, log_fn: LogFunc) -> Self {
         Self {
             name: name.to_string(),
@@ -177,8 +178,6 @@ mod tests {
         let mut status_calls = 0;
         let mut last_status_log = String::new();
         let status_ok = osquery::ExtensionStatus::new(0, String::from("OK"), None);
-
-        // Basic methods and Log string
         let mut plugin = LoggerPlugin::new("mock", |typ, log| {
             match typ {
                 LogType::Health => {
@@ -229,7 +228,6 @@ mod tests {
     #[test]
     fn logger_plugin_error() {
         let mut called = false;
-        // Basic methods and Log string
         let mut plugin = LoggerPlugin::new("mock", |_typ, _log| {
             called = true;
             Err("log_fn_foobar".into())
@@ -245,7 +243,6 @@ mod tests {
                 .unwrap()
         );
 
-        // Unknown log types should now return error status
         assert_eq!(
             1,
             plugin
@@ -259,7 +256,6 @@ mod tests {
                 .unwrap()
         );
 
-        // Call with empty status
         assert_eq!(
             1,
             plugin
@@ -273,7 +269,6 @@ mod tests {
                 .unwrap()
         );
 
-        // Call with good action but logging fails
         let res = plugin
             .call(osquery::ExtensionPluginRequest::from([(
                 "string".to_string(),
@@ -288,7 +283,6 @@ mod tests {
             res.message.unwrap()
         );
 
-        // call with multiple errors
         let res = plugin
             .call(osquery::ExtensionPluginRequest::from([
                 ("string".to_string(), "logged true".to_string()),
@@ -340,7 +334,6 @@ mod tests {
     #[test]
     fn logger_plugin_no_shutdown_hook() {
         let plugin = LoggerPlugin::new("mock", |_typ, _log| Ok(()));
-        // Should not panic when no shutdown hook is set
         plugin.shutdown();
     }
 }

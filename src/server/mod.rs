@@ -5,8 +5,7 @@ mod manager;
 mod threaded;
 pub use manager::{ExtensionManagerServer, ExtensionManagerServerBuilder, ShutdownHandle};
 
-/// `RegistryNames` contains the allowable `registry_name` values. If a plugin
-/// attempts to register with another value, the program will panic.
+/// Supported plugin registry types.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RegistryName {
@@ -41,32 +40,28 @@ impl std::str::FromStr for RegistryName {
     }
 }
 
-/// `OsqueryPlugin` represents an osquery plugin.
+/// An osquery extension plugin.
 pub trait OsqueryPlugin: Send + Sync {
-    /// Return the name used to refer to the plugin (e.g. the name of the
-    /// table the plugin implements).
+    /// Return the plugin name (e.g. the table name it implements).
     fn name(&self) -> &str;
 
     /// Return the registry this plugin belongs to.
     fn registry_name(&self) -> RegistryName;
 
-    /// Return the detailed information about the interface exposed
-    /// by the plugin. See the example plugins for samples.
+    /// Return the routes (column definitions, etc.) exposed by the plugin.
     fn routes(&self) -> osquery::ExtensionPluginResponse {
         osquery::ExtensionPluginResponse::new()
     }
 
-    /// Perform a health check for the plugin. If the plugin is in a
-    /// healthy state, `StatusOK` should be returned.
+    /// Health check. Returns status OK by default.
     fn ping(&self) -> osquery::ExtensionStatus {
         osquery::ExtensionStatus::new(0, "OK".to_string(), None)
     }
 
-    /// Perform the plugin's defined behavior, returning
-    /// a response containing the result.
+    /// Handle an incoming request from osquery.
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse;
 
-    /// Alert the plugin to stop.
+    /// Called when the plugin is being shut down.
     fn shutdown(&self) {}
 }
 
