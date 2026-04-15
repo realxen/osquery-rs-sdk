@@ -1,7 +1,7 @@
 [package]
 name = "osquery-rs-sdk"
 version = "0.1.0"
-description = "Rust bindings for osquery."
+description = "Rust SDK for building osquery extensions — tables, loggers, config providers, and distributed query handlers."
 readme = "README.md"
 authors = ["realxen <86901550+realxen@users.noreply.github.com>"]
 license = "MIT"
@@ -67,8 +67,19 @@ crate-type = ["bin"]
 required-features = ["plugins"]
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 serial_test = "3"
 serde_json = "1"
+
+[[bench]]
+name = "deserialization"
+harness = false
+required-features = ["plugins"]
+
+[[bench]]
+name = "server_dispatch"
+harness = false
+required-features = ["plugins", "mock"]
 
 [lints.rust]
 unsafe_code = "warn"
