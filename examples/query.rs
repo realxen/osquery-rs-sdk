@@ -1,14 +1,6 @@
-fn main() {
-    let mut client = osquery_rs_sdk::ExtensionManagerClient::connect().unwrap();
-    let resp = client.query("SELECT * from USERS limit 1").unwrap();
-    match resp.response {
-        Some(res) => println!("Got results: {:?}", res),
-        None => {
-            println!(
-                "osqueryd returned error: {:?}",
-                resp.status.unwrap_or_default()
-            );
-            std::process::exit(1);
-        }
-    }
+fn main() -> osquery_rs_sdk::Result<()> {
+    let mut client = osquery_rs_sdk::ExtensionManagerClient::connect()?;
+    let rows = client.query_rows("SELECT * FROM users LIMIT 1")?;
+    println!("Got results: {:?}", rows);
+    Ok(())
 }

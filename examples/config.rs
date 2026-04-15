@@ -26,7 +26,7 @@ fn generate_configs() -> Result<BTreeMap<String, String>> {
                     "interval": 600
                   }
                 }
-              }            
+              }
         "#,
         ),
     )]))

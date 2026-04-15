@@ -11,8 +11,7 @@ fn main() -> Result<()> {
     server.run()
 }
 
-// typ plugin::LogType, logText string
 fn log_string(typ: LogType, log_text: &str) -> Result<()> {
-    println!("{}: {}\n", typ, log_text);
+    println!("{}: {}", typ, log_text);
     Ok(())
 }

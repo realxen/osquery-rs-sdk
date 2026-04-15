@@ -31,7 +31,7 @@ fn main() -> Result<()> {
         "##### Note: This is a simple interface for osqueryd please use osqueryi instead ####"
     );
     println!("### Example: SELECT * from example_table ###");
-    let mut query = String::from("");
+    let mut query = String::new();
     while stdin().read_line(&mut query).is_ok() {
         if handle.is_finished() {
             break;
@@ -56,8 +56,8 @@ fn example_columns() -> Vec<ColumnDefinition> {
     ]
 }
 
-fn example_generate(_qctx: QueryContext) -> Result<Table> {
-    println!("{:?}", _qctx);
+fn example_generate(qctx: QueryContext) -> Result<Table> {
+    println!("{:?}", qctx);
     Ok(vec![BTreeMap::from([
         ("hello".to_string(), "hello world".to_string()),
         ("integer".to_string(), "123".to_string()),
