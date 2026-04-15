@@ -1,3 +1,9 @@
+#![allow(
+    clippy::print_stdout,
+    clippy::unnecessary_wraps,
+    clippy::needless_pass_by_value
+)]
+
 use osquery_rs_sdk::{
     DistributedPlugin, ExtensionManagerServer, QueriesRequest, QueryResponse, Result,
 };
@@ -26,6 +32,6 @@ fn get_queries() -> Result<QueriesRequest> {
 }
 
 fn write_results(query_resp: Vec<QueryResponse>) -> Result<()> {
-    println!("{:?}", query_resp);
+    println!("{query_resp:?}");
     Ok(())
 }

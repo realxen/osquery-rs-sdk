@@ -361,7 +361,6 @@ mod tests {
         assert!(resp.response.is_some());
 
         assert!(resp.response.clone().unwrap()[0].contains_key("results"));
-        assert!(resp.response.clone().unwrap()[0].get("results").is_some());
         assert_eq!(
             r#"{"queries":{"query1":"select iso_8601 from time","query2":"select version from osquery_info","query3":"select foo from bar"},"discovery":{},"accelerate":5}"#,
             resp.response.unwrap()[0].get("results").unwrap()
@@ -410,8 +409,7 @@ mod tests {
         assert_eq!(
             *resp
                 .response
-                .unwrap()
-                .get(0)
+                .unwrap().first()
                 .unwrap()
                 .get("results")
                 .unwrap(),
@@ -630,7 +628,7 @@ mod tests {
             (false, r#"{"status": 1}"#, OsqueryInt(1)),
             (false, r#"{"status": -12}"#, OsqueryInt(-12)),
             // should fail
-            (true, r#"foo"#, OsqueryInt(0)),
+            (true, r"foo", OsqueryInt(0)),
             (true, r#"{"status": ""}"#, OsqueryInt(0)),
             (true, r#"{"status": 000}"#, OsqueryInt(0)),
             (
@@ -654,7 +652,7 @@ mod tests {
                     assert_eq!(expected.0, s.get("status").unwrap().0);
                 }
                 Err(err) => {
-                    println!("{:?}", err);
+                    println!("{err:?}");
                     assert!(should_err);
                 }
             }

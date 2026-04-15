@@ -109,6 +109,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
     }
 
     #[cfg(unix)]
+    #[allow(unused_variables)]
     fn listen_uds<P: AsRef<Path>>(&mut self, socket_path: P) -> io::Result<()> {
         let mut stop_rx = self.stop_rx.clone();
         self.runtime.block_on(async {
@@ -150,7 +151,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
             let mut write_buf = Vec::with_capacity(4096);
             loop {
                 match read_transport.fill_buf().await {
-                    Ok(s) if s.is_empty() => break, // EOF: peer closed connection
+                    Ok([]) => break, // EOF: peer closed connection
                     Ok(s) => {
                         let buf_count = s.len();
                         write_buf.clear();
@@ -163,6 +164,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                                 match err {
                                     TError::Transport(terr)
                                         if terr.kind == TErrorKind::EndOfFile => {}
+                                    #[allow(unused_variables)]
                                     other => {
                                         #[cfg(feature = "tracing")]
                                         tracing::error!("processor completed with error: {other:?}");
@@ -177,6 +179,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                             read_transport.consume(buf_count);
                         }
                     }
+                    #[allow(unused_variables)]
                     Err(e) => {
                         #[cfg(feature = "tracing")]
                         tracing::error!("error reading stream: {e:?}");
@@ -198,7 +201,7 @@ mod tests {
     // Use a unique socket per test case to avoid cross-test interference.
     fn init_server(name: &str) -> (PathBuf, StopHandle) {
         #[cfg(unix)]
-        let socket: PathBuf = format!("/tmp/osquery_rs_sdk.server.{}.test.em", name).into();
+        let socket: PathBuf = format!("/tmp/osquery_rs_sdk.server.{name}.test.em").into();
         #[cfg(windows)]
         let socket: PathBuf = format!(r"\\.\pipe\osquery_rs_sdk.server.{}.test.em", name).into();
 
@@ -246,22 +249,22 @@ mod tests {
 
     #[test]
     fn processor() {
+        const NTHREADS: u32 = 10;
         let (test_socket, _stop) = init_server("processor");
         let (tx, rx) = std::sync::mpsc::channel();
         let mut children = Vec::new();
 
-        const NTHREADS: u32 = 10;
         for id in 0..NTHREADS {
             let test_socket = test_socket.clone();
             // The sender endpoint can be copied
             let thread_tx = tx.clone();
             let child = std::thread::spawn(move || {
                 let mut client = client::ExtensionManagerClient::connect_with_path(test_socket)
-                    .unwrap_or_else(|e| panic!("error connecting id: {} {}", id, e));
+                    .unwrap_or_else(|e| panic!("error connecting id: {id} {e}"));
                 for i in 0..(NTHREADS * 100) {
                     client
                         .ping()
-                        .unwrap_or_else(|_| panic!("ping failed id: {} {}", id, i));
+                        .unwrap_or_else(|_| panic!("ping failed id: {id} {i}"));
                 }
                 thread_tx.send(id).unwrap();
             });

@@ -3,6 +3,22 @@
 //! This crate implements the components required to build a working
 //! osquery plugin server and client.
 
+// Test code legitimately uses unwrap/expect/println/todo/unimplemented.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unnecessary_wraps,
+        clippy::semicolon_if_nothing_returned,
+        clippy::needless_pass_by_value,
+    )
+)]
+
 use std::result;
 
 #[allow(

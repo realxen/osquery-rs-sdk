@@ -48,7 +48,7 @@ impl OsqueryPlugin for MockPlugin {
     }
 }
 
-/// MockExtensionServerHandler impl the ExtensionSyncHandler interface to mock a server handler
+/// `MockExtensionServerHandler` impl the `ExtensionSyncHandler` interface to mock a server handler
 #[allow(dead_code)]
 pub struct MockExtensionServerHandler {}
 

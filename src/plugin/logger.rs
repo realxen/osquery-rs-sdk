@@ -168,7 +168,7 @@ mod tests {
                     assert_eq!(log, "logged string");
                 }
                 _ => {}
-            };
+            }
             Ok(())
         });
 
@@ -217,7 +217,7 @@ mod tests {
             plugin
                 .call(osquery::ExtensionPluginRequest::from([(
                     "custom".to_string(),
-                    "".to_string()
+                    String::new()
                 )]))
                 .status
                 .unwrap()
@@ -231,7 +231,7 @@ mod tests {
             plugin
                 .call(osquery::ExtensionPluginRequest::from([
                     ("status".to_string(), "true".to_string()),
-                    ("log".to_string(), "".to_string())
+                    ("log".to_string(), String::new())
                 ]))
                 .status
                 .unwrap()

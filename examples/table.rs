@@ -1,3 +1,10 @@
+#![allow(
+    clippy::print_stdout,
+    clippy::unwrap_used,
+    clippy::needless_pass_by_value,
+    clippy::unnecessary_wraps
+)]
+
 use osquery_rs_sdk::{
     ColumnDefinition, ExtensionManagerClient, ExtensionManagerServer, QueryContext, Result, Table,
     TablePlugin,
@@ -36,7 +43,7 @@ fn main() -> Result<()> {
         if handle.is_finished() {
             break;
         }
-        if let Some('\n') | Some('\r') = query.chars().next_back() {
+        if let Some('\n' | '\r') = query.chars().next_back() {
             if query.len() > 1 {
                 println!("{:?}", client.query(&query)?.response.unwrap_or_default());
             }
@@ -57,7 +64,7 @@ fn example_columns() -> Vec<ColumnDefinition> {
 }
 
 fn example_generate(qctx: QueryContext) -> Result<Table> {
-    println!("{:?}", qctx);
+    println!("{qctx:?}");
     Ok(vec![BTreeMap::from([
         ("hello".to_string(), "hello world".to_string()),
         ("integer".to_string(), "123".to_string()),

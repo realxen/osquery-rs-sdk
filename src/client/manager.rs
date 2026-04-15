@@ -99,7 +99,7 @@ impl std::fmt::Debug for ExtensionManagerClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExtensionManagerClient")
             .field("connected", &self.stream.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -463,8 +463,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert!(
             err.to_string().contains("timed out"),
-            "error should mention timeout: {}",
-            err
+            "error should mention timeout: {err}"
         );
     }
 

@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::unnecessary_wraps)]
+
 use osquery_rs_sdk::{ExtensionManagerServer, LogType, LoggerPlugin, Result};
 
 #[cfg(unix)]
@@ -12,6 +14,6 @@ fn main() -> Result<()> {
 }
 
 fn log_string(typ: LogType, log_text: &str) -> Result<()> {
-    println!("{}: {}", typ, log_text);
+    println!("{typ}: {log_text}");
     Ok(())
 }

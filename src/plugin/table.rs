@@ -882,7 +882,7 @@ mod tests {
     fn deserialize_constraint_list() {
         // (test_case (should_err, json, Vec<Constraint>))
         let test_cases = vec![
-            (true, r#"bad"#, None),
+            (true, r"bad", None),
             (true, r#"{"foo": "bar"}"#, None),
             (false, r#"{"affinity":"BIGINT"}"#, Some(Vec::new())),
             (
@@ -908,7 +908,7 @@ mod tests {
                             s.expression,
                             constraints.unwrap().first().unwrap().expression
                         )
-                    };
+                    }
                 }
                 Err(_) => assert!(should_err),
             }
@@ -919,7 +919,7 @@ mod tests {
     fn deserialize_query_context() {
         // (test_case (should_err, json, Vec<Constraint>))
         let test_cases = vec![
-            (true, r#"bad"#, None),
+            (true, r"bad", None),
             (false, r#"{"foo": "bar"}"#, Some(BTreeMap::new())),
             (
                 false,
@@ -1167,6 +1167,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn deserialize_varying_query_contexts() {
         let test_cases = vec![
             // Stringy JSON from osquery version < 3
@@ -1272,7 +1273,7 @@ mod tests {
                 ])),
             ),
             // Error cases
-            (true, r#"{bad json}"#, None),
+            (true, r"{bad json}", None),
             (
                 true,
                 r#"{"constraints":[{"name":"foo","list":["bar", "baz"],"affinity":"TEXT"}]"#,
@@ -1302,9 +1303,9 @@ mod tests {
                                 );
                             }
                             None => {
-                                assert!(constraints.get(k).unwrap().constraints.first().is_none())
+                                assert!(constraints.get(k).unwrap().constraints.is_empty())
                             }
-                        };
+                        }
                     }
                 }
                 Err(_) => assert!(should_err),

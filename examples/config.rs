@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_wraps)]
+
 use osquery_rs_sdk::{ConfigPlugin, ExtensionManagerServer, Result};
 use std::collections::BTreeMap;
 

@@ -230,7 +230,7 @@ impl std::fmt::Debug for MockExtensionManager {
                 "get_query_columns_call_count",
                 &self.get_query_columns_call_count,
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -440,7 +440,7 @@ impl std::fmt::Debug for MockPlugin {
             .field("routes_call_count", &self.routes_call_count)
             .field("ping_call_count", &self.ping_call_count)
             .field("shutdown_call_count", &self.shutdown_call_count)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(res.status.clone().unwrap().code.unwrap(), 1);
         assert_eq!(
             res.status.unwrap().message.unwrap(),
-            String::from(r#"error getting config - foobar"#)
+            String::from(r"error getting config - foobar")
         );
     }
 }

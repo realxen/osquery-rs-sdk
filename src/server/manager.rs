@@ -182,7 +182,7 @@ impl fmt::Debug for ExtensionManagerServer {
             .field("client_ownership", &self.client_ownership)
             .field("timeout", &self.timeout)
             .field("ping_interval", &self.ping_interval)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -267,7 +267,7 @@ impl ExtensionManagerServer {
             for (plug_name, plugin) in plugins {
                 let plugin = plugin.lock().map_err(|_| "plugin lock poisoned")?;
                 routes
-                    .entry(plug_name.to_string())
+                    .entry(plug_name.clone())
                     .or_insert_with(|| plugin.routes());
             }
         }
@@ -682,16 +682,14 @@ mod tests {
         let shutdown_err = server.shutdown().err();
         assert!(
             shutdown_err.is_none(),
-            "shutdown should be ok: {:?}",
-            shutdown_err
+            "shutdown should be ok: {shutdown_err:?}"
         );
 
         // Second shutdown should also succeed (idempotent)
         let shutdown_err = server.shutdown().err();
         assert!(
             shutdown_err.is_none(),
-            "second shutdown should be ok (idempotent): {:?}",
-            shutdown_err
+            "second shutdown should be ok (idempotent): {shutdown_err:?}"
         );
     }
 
@@ -717,7 +715,7 @@ mod tests {
         let res = handler
             .handle_call(
                 String::from("table"),
-                String::from(""),
+                String::new(),
                 osquery::ExtensionPluginRequest::new(),
             )
             .unwrap();
@@ -775,8 +773,7 @@ mod tests {
             Err(e) => assert!(
                 e.to_string()
                     .contains("exceeded the maximum socket path character length"),
-                "should report socket path length error, got: {}",
-                e
+                "should report socket path length error, got: {e}"
             ),
             Ok(_) => panic!("expected error for long socket path"),
         }
@@ -792,8 +789,7 @@ mod tests {
             Err(e) => assert!(
                 !e.to_string()
                     .contains("exceeded the maximum socket path character length"),
-                "should not be a path length error, got: {}",
-                e
+                "should not be a path length error, got: {e}"
             ),
             Ok(_) => panic!("expected connection error for non-existent socket"),
         }

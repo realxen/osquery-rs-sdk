@@ -7,6 +7,14 @@
 //! cargo test --all-features --test e2e -- --ignored
 //! ```
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stdout,
+    clippy::semicolon_if_nothing_returned,
+    clippy::needless_pass_by_value
+)]
+
 use osquery_rs_sdk::{
     ColumnDefinition, ConfigPlugin, DistributedPlugin, ExtensionManagerClient,
     ExtensionManagerServer, LogType, LoggerPlugin, QueriesRequest, QueryResponse, Result, Table,
@@ -375,6 +383,7 @@ fn builder_pattern_e2e() {
 // 8. MockExtensionManager: test without live osqueryd
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "mock")]
 #[test]
 fn mock_server_with_mock_client() {
     use osquery_rs_sdk::mock::MockExtensionManager;
@@ -410,6 +419,7 @@ fn socket_path_too_long() {
     assert!(result.is_err(), "socket path too long should error");
 }
 
+#[cfg(feature = "mock")]
 #[test]
 fn duplicate_plugin_registration() {
     use osquery_rs_sdk::mock::MockExtensionManager;
