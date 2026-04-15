@@ -64,6 +64,11 @@ name = "distributed"
 crate-type = ["bin"]
 required-features = ["plugins"]
 
+[[example]]
+name = "writable_table"
+crate-type = ["bin"]
+required-features = ["plugins"]
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 serial_test = "3"
