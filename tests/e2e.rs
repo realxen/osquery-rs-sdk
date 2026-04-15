@@ -177,7 +177,7 @@ impl E2eWritableTable {
 }
 
 impl WritableTable for E2eWritableTable {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "e2e_writable"
     }
 
@@ -205,13 +205,9 @@ impl WritableTable for E2eWritableTable {
         let key = req
             .values
             .first()
-            .and_then(|v| v.clone())
+            .and_then(Clone::clone)
             .unwrap_or_default();
-        let value = req
-            .values
-            .get(1)
-            .and_then(|v| v.clone())
-            .unwrap_or_default();
+        let value = req.values.get(1).and_then(Clone::clone).unwrap_or_default();
         let row_id = req.row_id.unwrap_or(0);
         self.data.insert(row_id, (key, value));
         Ok(MutationResult::Success {
@@ -223,13 +219,9 @@ impl WritableTable for E2eWritableTable {
         let key = req
             .values
             .first()
-            .and_then(|v| v.clone())
+            .and_then(Clone::clone)
             .unwrap_or_default();
-        let value = req
-            .values
-            .get(1)
-            .and_then(|v| v.clone())
-            .unwrap_or_default();
+        let value = req.values.get(1).and_then(Clone::clone).unwrap_or_default();
         let id = req.new_row_id.unwrap_or(req.row_id);
         self.data.remove(&req.row_id);
         self.data.insert(id, (key, value));

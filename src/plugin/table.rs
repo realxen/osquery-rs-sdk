@@ -1,7 +1,7 @@
 //! Create an osquery table plugin.
 
-use crate::{OsqueryPlugin, RegistryName, Result, osquery};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use crate::{osquery, OsqueryPlugin, RegistryName, Result};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt, result};
 
@@ -526,7 +526,7 @@ impl ColumnDefinition {
         self
     }
 
-    /// Mark as required. SQLite will reject queries missing this column.
+    /// Mark as required. `SQLite` will reject queries missing this column.
     #[must_use]
     pub fn required(mut self) -> Self {
         self.required = true;
@@ -836,6 +836,7 @@ fn error_response(msg: &str) -> osquery::ExtensionResponse {
 ///     }
 /// }
 /// ```
+#[allow(clippy::missing_errors_doc)] // Error conditions are implementor-defined.
 pub trait WritableTable: Send + Sync {
     /// Table name as registered with osquery.
     fn name(&self) -> &str;
@@ -1678,7 +1679,7 @@ mod tests {
 
     #[test]
     fn parse_json_value_array_numeric_values() {
-        let vals = parse_json_value_array(r#"[123, 3.14, true]"#).unwrap();
+        let vals = parse_json_value_array(r"[123, 3.14, true]").unwrap();
         assert_eq!(
             vals,
             vec![
@@ -1746,7 +1747,7 @@ mod tests {
     }
 
     impl WritableTable for MockWritableTable {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "mock_writable"
         }
 
@@ -1774,13 +1775,9 @@ mod tests {
             let key = req
                 .values
                 .first()
-                .and_then(|v| v.clone())
+                .and_then(Clone::clone)
                 .unwrap_or_default();
-            let value = req
-                .values
-                .get(1)
-                .and_then(|v| v.clone())
-                .unwrap_or_default();
+            let value = req.values.get(1).and_then(Clone::clone).unwrap_or_default();
             let row_id = req.row_id.unwrap_or(0);
             self.data.insert(row_id, (key, value));
             Ok(MutationResult::Success {
@@ -1792,13 +1789,9 @@ mod tests {
             let key = req
                 .values
                 .first()
-                .and_then(|v| v.clone())
+                .and_then(Clone::clone)
                 .unwrap_or_default();
-            let value = req
-                .values
-                .get(1)
-                .and_then(|v| v.clone())
-                .unwrap_or_default();
+            let value = req.values.get(1).and_then(Clone::clone).unwrap_or_default();
             let id = req.new_row_id.unwrap_or(req.row_id);
             self.data.remove(&req.row_id);
             self.data.insert(id, (key, value));
@@ -1923,11 +1916,10 @@ mod tests {
 
         let row = &resp.response.unwrap()[0];
         assert_eq!(row.get("status").unwrap(), "failure");
-        assert!(
-            row.get("message")
-                .unwrap()
-                .contains("missing json_value_array")
-        );
+        assert!(row
+            .get("message")
+            .unwrap()
+            .contains("missing json_value_array"));
     }
 
     #[test]
@@ -1941,11 +1933,10 @@ mod tests {
 
         let row = &resp.response.unwrap()[0];
         assert_eq!(row.get("status").unwrap(), "failure");
-        assert!(
-            row.get("message")
-                .unwrap()
-                .contains("invalid json_value_array")
-        );
+        assert!(row
+            .get("message")
+            .unwrap()
+            .contains("invalid json_value_array"));
     }
 
     #[test]
@@ -1967,7 +1958,7 @@ mod tests {
     fn writable_table_with_context() {
         struct ContextChecker;
         impl WritableTable for ContextChecker {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "ctx_check"
             }
             fn columns(&self) -> Vec<ColumnDefinition> {
@@ -2008,7 +1999,7 @@ mod tests {
     fn writable_table_callback_returns_constraint() {
         struct ConstraintTable;
         impl WritableTable for ConstraintTable {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "constraint_tbl"
             }
             fn columns(&self) -> Vec<ColumnDefinition> {
@@ -2043,7 +2034,7 @@ mod tests {
     fn writable_table_callback_returns_err() {
         struct ErrTable;
         impl WritableTable for ErrTable {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "err_tbl"
             }
             fn columns(&self) -> Vec<ColumnDefinition> {
