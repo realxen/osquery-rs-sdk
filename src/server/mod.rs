@@ -3,7 +3,7 @@ use std::fmt;
 
 mod manager;
 mod threaded;
-pub use manager::{ExtensionManagerServer, ExtensionManagerServerBuilder};
+pub use manager::{ExtensionManagerServer, ExtensionManagerServerBuilder, ShutdownHandle};
 
 /// `RegistryNames` contains the allowable `registry_name` values. If a plugin
 /// attempts to register with another value, the program will panic.

@@ -49,6 +49,7 @@ pub use crate::client::{ExtensionManager, ExtensionManagerClient};
 #[cfg(feature = "server")]
 pub use crate::server::{
     ExtensionManagerServer, ExtensionManagerServerBuilder, OsqueryPlugin, RegistryName,
+    ShutdownHandle,
 };
 
 #[cfg(feature = "plugins")]

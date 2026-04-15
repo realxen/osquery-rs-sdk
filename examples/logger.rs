@@ -9,8 +9,13 @@ const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 
 fn main() -> Result<()> {
     let mut server = ExtensionManagerServer::new("my_logger", OSQUERY_SOCKET)?;
-    server.register_plugin(LoggerPlugin::new("my_logger", log_string))?;
-    server.run()
+    server.register_plugin(
+        LoggerPlugin::new("my_logger", log_string).with_shutdown(|| {
+            println!("Logger shutting down, flushing buffers...");
+        }),
+    )?;
+    // Automatically handles SIGINT/SIGTERM (Unix) or Ctrl+C (Windows)
+    server.run_with_signal_handling()
 }
 
 fn log_string(typ: LogType, log_text: &str) -> Result<()> {

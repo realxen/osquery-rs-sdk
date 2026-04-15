@@ -28,6 +28,48 @@ const DEFAULT_TIMEOUT: time::Duration = time::Duration::from_secs(1);
 /// Default interval for pinging osquery to check connectivity.
 const DEFAULT_PING_INTERVAL: time::Duration = time::Duration::from_secs(5);
 
+/// A lightweight handle that can trigger a full shutdown of an
+/// [`ExtensionManagerServer`] from any thread.
+///
+/// This handle is `Clone + Send + Sync`, so it can be freely shared across
+/// threads, signal handlers, or async tasks. Calling [`shutdown`](ShutdownHandle::shutdown)
+/// causes the server's [`run`](ExtensionManagerServer::run) (or
+/// [`run_with_signal_handling`](ExtensionManagerServer::run_with_signal_handling))
+/// loop to initiate the full clean shutdown sequence: deregister the extension
+/// from osquery, stop the listener, and close the client connection.
+///
+/// # Example
+/// ```no_run
+/// use osquery_rs_sdk::ExtensionManagerServer;
+///
+/// let server = ExtensionManagerServer::new("my_ext", "/var/osquery/osquery.em").unwrap();
+/// let handle = server.shutdown_handle();
+///
+/// // Send to another thread, signal handler, etc.
+/// std::thread::spawn(move || {
+///     // ... some condition ...
+///     handle.shutdown();
+/// });
+/// ```
+#[derive(Clone, Debug)]
+pub struct ShutdownHandle {
+    sender: ShutdownSignal,
+}
+
+impl ShutdownHandle {
+    /// Trigger a full shutdown of the extension manager server.
+    ///
+    /// This sends a shutdown signal that causes `run()` or
+    /// `run_with_signal_handling()` to initiate the clean shutdown sequence
+    /// (deregister extension, stop listener, close client).
+    ///
+    /// This method is safe to call multiple times; subsequent calls are no-ops
+    /// (the channel is bounded to 1, so extra sends silently fail).
+    pub fn shutdown(&self) {
+        self.sender.try_send(None).ok();
+    }
+}
+
 /// Whether the server owns the osquery client and should close it on shutdown.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClientOwnership {
@@ -137,6 +179,8 @@ impl<P: AsRef<Path>> ExtensionManagerServerBuilder<P> {
             )
         };
 
+        let (shutdown_tx, shutdown_rx) = mpsc::sync_channel(1);
+
         Ok(ExtensionManagerServer {
             name: self.name,
             registry: Arc::from(Mutex::new(HashMap::new())),
@@ -149,6 +193,8 @@ impl<P: AsRef<Path>> ExtensionManagerServerBuilder<P> {
             listen_path: None,
             timeout: self.timeout,
             ping_interval: self.ping_interval,
+            shutdown_tx,
+            shutdown_rx: Some(shutdown_rx),
         })
     }
 }
@@ -169,6 +215,8 @@ pub struct ExtensionManagerServer {
     #[allow(dead_code)] // Stored for forward-compatibility with transport-layer timeouts.
     timeout: time::Duration,
     ping_interval: time::Duration, // How often to ping osquery server
+    shutdown_tx: ShutdownSignal,
+    shutdown_rx: Option<mpsc::Receiver<Option<Error>>>,
 }
 
 impl fmt::Debug for ExtensionManagerServer {
@@ -321,8 +369,8 @@ impl ExtensionManagerServer {
 
     /// Open a new thread and begin listening for requests from the osquery process.
     /// All plugins should be registered with `register_plugin()` before calling `start()`.
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, shutdown)))]
-    fn start(&mut self, shutdown: ShutdownSignal) -> Result<()> {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
+    fn start(&mut self) -> Result<()> {
         // will set the uuid and listen_path for the server
         self.register_extension()?;
 
@@ -331,6 +379,7 @@ impl ExtensionManagerServer {
             .clone()
             .ok_or("set the listen_path to start server")?;
 
+        let shutdown = self.shutdown_tx.clone();
         let handler = ExtensionServerHandler {
             registry: self.registry.clone(),
             shutdown: shutdown.clone(),
@@ -408,6 +457,17 @@ impl ExtensionManagerServer {
         Ok(())
     }
 
+    /// Return a [`ShutdownHandle`] that can be used to trigger a full shutdown
+    /// of the extension manager server from any thread.
+    ///
+    /// The returned handle is `Clone + Send + Sync`, so it can be freely shared.
+    #[must_use]
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle {
+            sender: self.shutdown_tx.clone(),
+        }
+    }
+
     /// Start the extension manager and run until osquery calls for a shutdown
     /// or the osquery instance goes away.
     /// Takes `&mut self` instead of consuming `self` so that external code
@@ -417,16 +477,22 @@ impl ExtensionManagerServer {
     ///
     /// Returns an error if starting the server fails, if the osquery process
     /// goes away (ping failure), or if shutdown encounters an error.
+    /// Returns an error if called more than once (the internal receiver is consumed
+    /// on the first call).
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(skip(self), fields(name = %self.name))
     )]
     pub fn run(&mut self) -> Result<()> {
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let rx = self
+            .shutdown_rx
+            .take()
+            .ok_or("run() has already been called")?;
+        let tx = self.shutdown_tx.clone();
         let ping_interval = self.ping_interval;
         let osquery_client = self.osquery_client.clone();
 
-        self.start(tx.clone())?;
+        self.start()?;
 
         // Watch for the osquery process going away. If so, initiate shutdown.
         std::thread::spawn(move || {
@@ -469,6 +535,48 @@ impl ExtensionManagerServer {
             Err(_) => Err("shutdown signal error".into()),
             Ok(None) => Ok(()),
         })
+    }
+
+    /// Start the extension manager with automatic OS signal handling.
+    ///
+    /// This is a convenience wrapper around [`run`](Self::run) that spawns a
+    /// background thread to listen for termination signals (SIGINT + SIGTERM on
+    /// Unix, Ctrl+C on Windows). When a signal is received, the server performs
+    /// a full clean shutdown (deregister, stop listener, close client).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`run`](Self::run), plus any errors from
+    /// setting up the signal handlers.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip(self), fields(name = %self.name))
+    )]
+    pub fn run_with_signal_handling(&mut self) -> Result<()> {
+        let signal_tx = self.shutdown_tx.clone();
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    signal_tx.send(Some(Error::from(e))).ok();
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                match wait_for_shutdown_signal().await {
+                    Ok(()) => {
+                        signal_tx.send(None).ok();
+                    }
+                    Err(e) => {
+                        signal_tx.send(Some(e)).ok();
+                    }
+                }
+            });
+        });
+        self.run()
     }
 }
 
@@ -545,6 +653,35 @@ impl osquery::ExtensionSyncHandler for ExtensionServerHandler {
             .send(None)
             .map_err(|_| "could not send shutdown signal".into())
     }
+}
+
+/// Wait for an OS termination signal.
+///
+/// On Unix, listens for SIGINT (Ctrl+C) and SIGTERM concurrently.
+/// On Windows, listens for Ctrl+C.
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| Error::from(e).context("failed to register SIGTERM handler"))?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result.map_err(|e| Error::from(e).context("failed to wait for SIGINT"))?;
+        }
+        _ = sigterm.recv() => {}
+    }
+    Ok(())
+}
+
+/// Wait for an OS termination signal.
+///
+/// On Windows, listens for Ctrl+C.
+#[cfg(windows)]
+async fn wait_for_shutdown_signal() -> Result<()> {
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|e| Error::from(e).context("failed to wait for Ctrl+C"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -657,8 +794,7 @@ mod tests {
     #[serial]
     fn start() {
         let mut server = init_server();
-        let (tx, _) = std::sync::mpsc::sync_channel(1);
-        server.start(tx).unwrap();
+        server.start().unwrap();
         let listen_path = server.listen_path.clone().unwrap();
         wait_for_extension_server(&listen_path);
     }
@@ -668,7 +804,6 @@ mod tests {
     #[serial]
     fn shutdown() {
         let mut server = init_server();
-        let (tx, _) = std::sync::mpsc::sync_channel(1);
 
         // Shutdown without uuid should succeed (idempotent -- no uuid means nothing to deregister)
         assert!(
@@ -676,7 +811,7 @@ mod tests {
             "shutdown without uuid should succeed (idempotent)"
         );
 
-        server.start(tx).unwrap();
+        server.start().unwrap();
 
         let listen_path = server.listen_path.clone().unwrap();
         wait_for_extension_server(&listen_path);
@@ -850,5 +985,60 @@ mod tests {
                 .is_some(),
             "plugin_c should be in config registry"
         );
+    }
+
+    #[test]
+    fn shutdown_handle_sends_signal() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ShutdownHandle { sender: tx };
+        handle.shutdown();
+        assert!(
+            rx.recv().unwrap().is_none(),
+            "shutdown handle should send None (clean shutdown)"
+        );
+    }
+
+    #[test]
+    fn shutdown_handle_is_clone() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ShutdownHandle { sender: tx };
+        let handle2 = handle.clone();
+        drop(handle);
+        handle2.shutdown();
+        assert!(
+            rx.recv().unwrap().is_none(),
+            "cloned handle should send shutdown signal"
+        );
+    }
+
+    #[test]
+    fn shutdown_handle_multiple_calls_safe() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let handle = ShutdownHandle { sender: tx };
+        handle.shutdown();
+        // Second call should silently fail (channel already has a message)
+        handle.shutdown();
+        assert!(
+            rx.recv().unwrap().is_none(),
+            "first shutdown should be clean"
+        );
+    }
+
+    #[test]
+    fn shutdown_handle_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ShutdownHandle>();
+    }
+
+    #[test]
+    #[ignore = "requires a running osqueryd extension socket"]
+    #[serial]
+    fn shutdown_handle_from_server() {
+        let server = init_server();
+        let handle = server.shutdown_handle();
+        let handle2 = handle.clone();
+        // Both should be valid and not panic
+        drop(handle2);
+        drop(handle);
     }
 }

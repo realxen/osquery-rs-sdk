@@ -7,12 +7,18 @@ use std::collections::BTreeMap;
 /// A map that should use the source name as key, and the config JSON as values.
 type Config = BTreeMap<String, String>;
 
-/// Osquery configuration plugin. That implement the `OsqueryPlugin` interface
+/// Callback for the `genPack` action. Receives the pack name and value,
+/// and returns the pack configuration JSON as a string.
+type GenPackFn = Box<dyn FnMut(&str, &str) -> Result<String> + Send + Sync>;
+
+/// Osquery configuration plugin that implements the `OsqueryPlugin` interface.
+///
 /// * [`GenFunc`]: returns a map that should use the source name as key, and the config
 ///   JSON as values.
 pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
     name: String,
     generate: GenFunc,
+    gen_pack: Option<GenPackFn>,
 }
 
 impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
@@ -23,7 +29,24 @@ impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
         Self {
             name: name.to_string(),
             generate,
+            gen_pack: None,
         }
+    }
+
+    /// Add pack generation support to this config plugin.
+    ///
+    /// The callback receives the pack name and value from osquery,
+    /// and should return the pack configuration JSON as a string.
+    ///
+    /// Without this, any `genPack` requests from osquery will return
+    /// an "unknown action" error.
+    #[must_use]
+    pub fn with_gen_pack(
+        mut self,
+        gen_pack: impl FnMut(&str, &str) -> Result<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.gen_pack = Some(Box::new(gen_pack));
+        self
     }
 }
 
@@ -41,8 +64,8 @@ impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigP
         tracing::instrument(skip(self, req), fields(plugin = %self.name))
     )]
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
-        match req.get("action") {
-            Some(action) if action == "genConfig" => match (self.generate)() {
+        match req.get("action").map(String::as_str) {
+            Some("genConfig") => match (self.generate)() {
                 Ok(conf) => osquery::ExtensionResponse::new(
                     osquery::ExtensionStatus::new(0, String::from("OK"), None),
                     osquery::ExtensionPluginResponse::from([conf]),
@@ -60,6 +83,59 @@ impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigP
                     )
                 }
             },
+            Some("genPack") => {
+                let Some(name) = req.get("name") else {
+                    return osquery::ExtensionResponse::new(
+                        osquery::ExtensionStatus::new(
+                            1,
+                            String::from("missing name in genPack request"),
+                            None,
+                        ),
+                        None,
+                    );
+                };
+                let Some(value) = req.get("value") else {
+                    return osquery::ExtensionResponse::new(
+                        osquery::ExtensionStatus::new(
+                            1,
+                            String::from("missing value in genPack request"),
+                            None,
+                        ),
+                        None,
+                    );
+                };
+                let Some(gen_pack) = self.gen_pack.as_mut() else {
+                    return osquery::ExtensionResponse::new(
+                        osquery::ExtensionStatus::new(
+                            1,
+                            String::from("genPack not supported"),
+                            None,
+                        ),
+                        None,
+                    );
+                };
+                match gen_pack(name, value) {
+                    Ok(pack) => osquery::ExtensionResponse::new(
+                        osquery::ExtensionStatus::new(0, String::from("OK"), None),
+                        osquery::ExtensionPluginResponse::from([BTreeMap::from([(
+                            name.clone(),
+                            pack,
+                        )])]),
+                    ),
+                    Err(err) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("error generating pack: {}", err);
+                        osquery::ExtensionResponse::new(
+                            osquery::ExtensionStatus::new(
+                                1,
+                                err.context("error generating pack").to_string(),
+                                None,
+                            ),
+                            None,
+                        )
+                    }
+                }
+            }
             Some(action) => osquery::ExtensionResponse::new(
                 osquery::ExtensionStatus::new(1, format!("unknown action: {action}"), None),
                 None,
@@ -120,6 +196,99 @@ mod tests {
         assert_eq!(
             res.status.unwrap().message.unwrap(),
             String::from(r"error getting config - foobar")
+        );
+    }
+
+    #[test]
+    fn config_plugin_gen_pack() {
+        let mut plugin = ConfigPlugin::new("mock", || Ok(BTreeMap::new()))
+            .with_gen_pack(|name, value| Ok(format!(r#"{{"pack":"{name}","src":"{value}"}}"#)));
+
+        let res = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("genPack")),
+            (String::from("name"), String::from("my_pack")),
+            (
+                String::from("value"),
+                String::from("/etc/osquery/packs/my_pack.conf"),
+            ),
+        ]));
+
+        assert_eq!(res.status.clone().unwrap().code.unwrap(), 0);
+        assert_eq!(
+            res.response.unwrap(),
+            osquery::ExtensionPluginResponse::from([BTreeMap::from([(
+                "my_pack".to_string(),
+                r#"{"pack":"my_pack","src":"/etc/osquery/packs/my_pack.conf"}"#.to_string(),
+            )])])
+        );
+    }
+
+    #[test]
+    fn config_plugin_gen_pack_not_supported() {
+        let mut plugin = ConfigPlugin::new("mock", || Ok(BTreeMap::new()));
+
+        let res = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("genPack")),
+            (String::from("name"), String::from("my_pack")),
+            (String::from("value"), String::from("target")),
+        ]));
+
+        assert_eq!(res.status.clone().unwrap().code.unwrap(), 1);
+        assert_eq!(
+            res.status.unwrap().message.unwrap(),
+            String::from("genPack not supported")
+        );
+    }
+
+    #[test]
+    fn config_plugin_gen_pack_missing_name() {
+        let mut plugin = ConfigPlugin::new("mock", || Ok(BTreeMap::new()))
+            .with_gen_pack(|_, _| Ok(String::new()));
+
+        let res = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("genPack")),
+            (String::from("value"), String::from("target")),
+        ]));
+
+        assert_eq!(res.status.clone().unwrap().code.unwrap(), 1);
+        assert_eq!(
+            res.status.unwrap().message.unwrap(),
+            String::from("missing name in genPack request")
+        );
+    }
+
+    #[test]
+    fn config_plugin_gen_pack_missing_value() {
+        let mut plugin = ConfigPlugin::new("mock", || Ok(BTreeMap::new()))
+            .with_gen_pack(|_, _| Ok(String::new()));
+
+        let res = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("genPack")),
+            (String::from("name"), String::from("my_pack")),
+        ]));
+
+        assert_eq!(res.status.clone().unwrap().code.unwrap(), 1);
+        assert_eq!(
+            res.status.unwrap().message.unwrap(),
+            String::from("missing value in genPack request")
+        );
+    }
+
+    #[test]
+    fn config_plugin_gen_pack_error() {
+        let mut plugin = ConfigPlugin::new("mock", || Ok(BTreeMap::new()))
+            .with_gen_pack(|_, _| Err("pack error".into()));
+
+        let res = plugin.call(osquery::ExtensionPluginRequest::from([
+            (String::from("action"), String::from("genPack")),
+            (String::from("name"), String::from("my_pack")),
+            (String::from("value"), String::from("target")),
+        ]));
+
+        assert_eq!(res.status.clone().unwrap().code.unwrap(), 1);
+        assert_eq!(
+            res.status.unwrap().message.unwrap(),
+            String::from("error generating pack - pack error")
         );
     }
 }

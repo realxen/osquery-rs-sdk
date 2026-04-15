@@ -3,7 +3,7 @@
 //! See <https://osquery.readthedocs.io/en/latest/development/logger-plugins/> for more.
 use crate::{OsqueryPlugin, RegistryName, Result, osquery};
 use serde_json::Value;
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, sync::Mutex};
 
 // encodes the type of log osquery is outputting.
 #[non_exhaustive]
@@ -46,13 +46,19 @@ impl std::str::FromStr for LogType {
     }
 }
 
-/// Osquery logger plugin. That implement the `OsqueryPlugin` interface
+/// Callback invoked when the plugin is shut down, allowing loggers to
+/// flush buffers or release resources.
+type ShutdownFn = Box<dyn FnOnce() + Send + Sync>;
+
+/// Osquery logger plugin that implements the `OsqueryPlugin` interface.
+///
 /// * `LogFunc`: should log the provided result string. The `LogType`
-// argument can be optionally used to log differently depending on the
-// type of log received.
+///   argument can be optionally used to log differently depending on the
+///   type of log received.
 pub struct LoggerPlugin<LogFunc: FnMut(LogType, &str) -> Result<()>> {
     name: String,
     log_fn: LogFunc,
+    on_shutdown: Mutex<Option<ShutdownFn>>,
 }
 
 impl<LogFunc: FnMut(LogType, &str) -> Result<()>> LoggerPlugin<LogFunc> {
@@ -62,7 +68,27 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()>> LoggerPlugin<LogFunc> {
         Self {
             name: name.to_string(),
             log_fn,
+            on_shutdown: Mutex::new(None),
         }
+    }
+
+    /// Add a shutdown hook to this logger plugin.
+    ///
+    /// The callback is invoked once when the plugin is shut down,
+    /// allowing loggers to flush buffers or release resources.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal shutdown lock is poisoned (should not happen
+    /// during normal construction).
+    #[must_use]
+    #[allow(clippy::expect_used)] // Mutex poisoning during construction is a bug, not a runtime condition.
+    pub fn with_shutdown(self, f: impl FnOnce() + Send + Sync + 'static) -> Self {
+        *self
+            .on_shutdown
+            .lock()
+            .expect("on_shutdown lock poisoned during construction") = Some(Box::new(f));
+        self
     }
 }
 
@@ -75,6 +101,14 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
 
     fn registry_name(&self) -> RegistryName {
         RegistryName::Logger
+    }
+
+    fn shutdown(&self) {
+        if let Ok(mut guard) = self.on_shutdown.lock() {
+            if let Some(f) = guard.take() {
+                f();
+            }
+        }
     }
 
     #[cfg_attr(
@@ -278,5 +312,35 @@ mod tests {
             msg.contains("cannot log request type: unknown_type"),
             "should contain unknown_type error: {msg}"
         );
+    }
+
+    #[test]
+    fn logger_plugin_shutdown_hook() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let flushed = Arc::new(AtomicBool::new(false));
+        let flushed_clone = flushed.clone();
+
+        let plugin = LoggerPlugin::new("mock", |_typ, _log| Ok(())).with_shutdown(move || {
+            flushed_clone.store(true, Ordering::SeqCst);
+        });
+
+        assert!(!flushed.load(Ordering::SeqCst), "should not be flushed yet");
+        plugin.shutdown();
+        assert!(
+            flushed.load(Ordering::SeqCst),
+            "should be flushed after shutdown"
+        );
+
+        // Second call should be a no-op (FnOnce was already consumed)
+        plugin.shutdown();
+    }
+
+    #[test]
+    fn logger_plugin_no_shutdown_hook() {
+        let plugin = LoggerPlugin::new("mock", |_typ, _log| Ok(()));
+        // Should not panic when no shutdown hook is set
+        plugin.shutdown();
     }
 }
