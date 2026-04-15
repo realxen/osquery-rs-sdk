@@ -200,5 +200,5 @@ This project was influenced by [osquery-go](https://github.com/osquery/osquery-g
 [docs-link]: https://docs.rs/osquery-rs-sdk
 [ci-image]: https://github.com/realxen/osquery-rs-sdk/actions/workflows/ci.yml/badge.svg
 [ci-link]: https://github.com/realxen/osquery-rs-sdk/actions/workflows/ci.yml
-[license-image]: https://img.shields.io/crates/l/osquery-rs-sdk.svg
+[license-image]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-link]: https://github.com/realxen/osquery-rs-sdk/blob/main/LICENSE
