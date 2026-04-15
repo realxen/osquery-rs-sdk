@@ -9,7 +9,7 @@ A Rust SDK for building [osquery](https://osquery.io) extensions. Create custom 
 
 ## Features
 
-- **Table plugins** -- Create custom virtual tables queryable with SQL
+- **Table plugins** -- Create custom virtual tables queryable with SQL, including writable tables with INSERT/UPDATE/DELETE support
 - **Logger plugins** -- Implement custom logging backends for osquery events and results
 - **Config plugins** -- Provide dynamic configuration sources for osquery
 - **Distributed plugins** -- Handle distributed query scheduling and result collection
@@ -68,6 +68,41 @@ fn generate(_ctx: QueryContext) -> Result<Table> {
         ("age".into(), "30".into()),
     ])])
 }
+```
+
+### Create a writable table
+
+Tables support INSERT, UPDATE, and DELETE via mutation callbacks:
+
+```rust
+use osquery_rs_sdk::{
+    ColumnDefinition, ExtensionManagerServer, InsertRequest, MutationResult,
+    QueryContext, Result, Table, TablePlugin, UpdateRequest, DeleteRequest,
+};
+use std::collections::BTreeMap;
+
+fn main() -> Result<()> {
+    let mut server = ExtensionManagerServer::new("my_ext", "/var/osquery/osquery.em")?;
+    server.register_plugin(
+        TablePlugin::writable("kv_store", columns(), generate,
+            |req: InsertRequest| Ok(MutationResult::Success { row_id: req.row_id }),
+            |_req: UpdateRequest| Ok(MutationResult::Success { row_id: None }),
+            |_req: DeleteRequest| Ok(MutationResult::Success { row_id: None }),
+        ),
+    )?;
+    server.run()
+}
+# fn columns() -> Vec<ColumnDefinition> { vec![] }
+# fn generate(_: QueryContext) -> Result<Table> { Ok(vec![]) }
+```
+
+Individual mutations can be added with builder methods:
+
+```rust
+# use osquery_rs_sdk::{TablePlugin, ColumnDefinition, MutationResult};
+let plugin = TablePlugin::new("my_table", vec![], |_| Ok(vec![]))
+    .with_insert(|req| Ok(MutationResult::Success { row_id: None }))
+    .with_delete(|req| Ok(MutationResult::Success { row_id: None }));
 ```
 
 ### Create a logger plugin

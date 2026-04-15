@@ -54,9 +54,10 @@ pub use crate::server::{
 
 #[cfg(feature = "plugins")]
 pub use crate::plugin::{
-    ColumnDefinition, ColumnType, ConfigPlugin, Constraint, ConstraintList, DistributedPlugin,
-    InvalidOperator, LogType, LoggerPlugin, Operator, QueriesRequest, QueryContext, QueryResponse,
-    Stats, Table, TablePlugin,
+    ColumnDefinition, ColumnType, ColumnValues, ConfigPlugin, Constraint, ConstraintList,
+    DeleteRequest, DistributedPlugin, InsertRequest, InvalidOperator, LogType, LoggerPlugin,
+    MutationResult, Operator, QueriesRequest, QueryContext, QueryResponse, Stats, Table,
+    TablePlugin, UpdateRequest,
 };
 
 /// Result type used throughout the plugin APIs.

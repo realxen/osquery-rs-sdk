@@ -9,6 +9,7 @@ pub use config::ConfigPlugin;
 pub use distributed::{DistributedPlugin, QueriesRequest, QueryResponse, Stats};
 pub use logger::{LogType, LoggerPlugin};
 pub use table::{
-    ColumnDefinition, ColumnType, Constraint, ConstraintList, InvalidOperator, Operator,
-    QueryContext, Table, TablePlugin,
+    ColumnDefinition, ColumnType, ColumnValues, Constraint, ConstraintList, DeleteRequest,
+    InsertRequest, InvalidOperator, MutationResult, Operator, QueryContext, Table, TablePlugin,
+    UpdateRequest,
 };

@@ -16,9 +16,9 @@
 )]
 
 use osquery_rs_sdk::{
-    ColumnDefinition, ConfigPlugin, DistributedPlugin, ExtensionManagerClient,
-    ExtensionManagerServer, LogType, LoggerPlugin, QueriesRequest, QueryResponse, Result, Table,
-    TablePlugin,
+    ColumnDefinition, ConfigPlugin, DeleteRequest, DistributedPlugin, ExtensionManagerClient,
+    ExtensionManagerServer, InsertRequest, LogType, LoggerPlugin, MutationResult, QueriesRequest,
+    QueryResponse, Result, Table, TablePlugin, UpdateRequest,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -36,7 +36,6 @@ const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 #[test]
 #[ignore = "requires a running osqueryd extension socket"]
 fn client_connect_and_query() {
-    // connect() uses the default socket path
     let mut client =
         ExtensionManagerClient::connect().expect("should connect to osqueryd at default socket");
 
@@ -123,7 +122,7 @@ fn table_plugin_e2e() {
         ])
     };
 
-    // Start the server in a background thread (run() blocks)
+    // run() blocks, so spawn in background
     let handle = std::thread::spawn(move || {
         let mut server = ExtensionManagerServer::new("e2e_table_ext", OSQUERY_SOCKET)
             .expect("server should create");
@@ -134,10 +133,8 @@ fn table_plugin_e2e() {
         let _ = server.run();
     });
 
-    // Give the server time to register with osqueryd
     std::thread::sleep(Duration::from_secs(2));
 
-    // Query the table via a client connected to osqueryd
     let mut client =
         ExtensionManagerClient::connect_with_path(OSQUERY_SOCKET).expect("client should connect");
 
@@ -158,7 +155,174 @@ fn table_plugin_e2e() {
     assert_eq!(rows.len(), 1, "WHERE clause should filter to 1 row");
     assert_eq!(rows[0].get("greeting").map(String::as_str), Some("world"));
 
-    // The server thread will end when the test process exits (Drop calls shutdown)
+    // Drop triggers shutdown
+    drop(handle);
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Writable TablePlugin: INSERT, SELECT, UPDATE, DELETE via osqueryd
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "requires a running osqueryd extension socket"]
+fn writable_table_plugin_e2e() {
+    let store: Arc<Mutex<BTreeMap<i64, (String, String)>>> = Arc::new(Mutex::new(BTreeMap::new()));
+
+    let gen_store = store.clone();
+    let ins_store = store.clone();
+    let upd_store = store.clone();
+    let del_store = store.clone();
+
+    let columns = vec![
+        ColumnDefinition::text("key").index(),
+        ColumnDefinition::text("value"),
+    ];
+
+    let plugin = TablePlugin::writable(
+        "e2e_writable",
+        columns,
+        move |_ctx: osquery_rs_sdk::QueryContext| -> Result<Table> {
+            let data = gen_store.lock().unwrap();
+            Ok(data
+                .values()
+                .map(|(k, v)| {
+                    BTreeMap::from([
+                        ("key".to_string(), k.clone()),
+                        ("value".to_string(), v.clone()),
+                    ])
+                })
+                .collect())
+        },
+        move |req: InsertRequest| -> Result<MutationResult> {
+            // values are in column-definition order: [key, value]
+            let key = req
+                .values
+                .first()
+                .and_then(|v| v.clone())
+                .unwrap_or_default();
+            let value = req
+                .values
+                .get(1)
+                .and_then(|v| v.clone())
+                .unwrap_or_default();
+            let row_id = req.row_id.unwrap_or(0);
+            ins_store.lock().unwrap().insert(row_id, (key, value));
+            Ok(MutationResult::Success {
+                row_id: Some(row_id),
+            })
+        },
+        move |req: UpdateRequest| -> Result<MutationResult> {
+            let key = req
+                .values
+                .first()
+                .and_then(|v| v.clone())
+                .unwrap_or_default();
+            let value = req
+                .values
+                .get(1)
+                .and_then(|v| v.clone())
+                .unwrap_or_default();
+            let id = req.new_row_id.unwrap_or(req.row_id);
+            let mut data = upd_store.lock().unwrap();
+            data.remove(&req.row_id);
+            data.insert(id, (key, value));
+            Ok(MutationResult::Success { row_id: None })
+        },
+        move |req: DeleteRequest| -> Result<MutationResult> {
+            del_store.lock().unwrap().remove(&req.row_id);
+            Ok(MutationResult::Success { row_id: None })
+        },
+    );
+
+    let handle = std::thread::spawn(move || {
+        let mut server = ExtensionManagerServer::new("e2e_writable_ext", OSQUERY_SOCKET)
+            .expect("server should create");
+        server
+            .register_plugin(plugin)
+            .expect("register_plugin should succeed");
+        let _ = server.run();
+    });
+
+    std::thread::sleep(Duration::from_secs(2));
+
+    let mut client =
+        ExtensionManagerClient::connect_with_path(OSQUERY_SOCKET).expect("client should connect");
+
+    // 1. Table should start empty
+    let rows = client
+        .query_rows("SELECT * FROM e2e_writable")
+        .expect("SELECT on empty writable table should succeed");
+    assert_eq!(rows.len(), 0, "writable table should start empty");
+
+    // 2. INSERT a row
+    let resp = client
+        .query("INSERT INTO e2e_writable (key, value) VALUES ('greeting', 'hello')")
+        .expect("INSERT should succeed");
+    let status = resp.status.expect("INSERT response should have status");
+    assert_eq!(
+        status.code.unwrap_or(-1),
+        0,
+        "INSERT status should be OK: {:?}",
+        status.message
+    );
+
+    // 3. SELECT should return the inserted row
+    let rows = client
+        .query_rows("SELECT key, value FROM e2e_writable")
+        .expect("SELECT after INSERT should succeed");
+    assert_eq!(rows.len(), 1, "should have 1 row after INSERT");
+    assert_eq!(
+        rows[0].get("key").map(String::as_str),
+        Some("greeting"),
+        "key should be 'greeting'"
+    );
+    assert_eq!(
+        rows[0].get("value").map(String::as_str),
+        Some("hello"),
+        "value should be 'hello'"
+    );
+
+    // 4. UPDATE the row
+    let resp = client
+        .query("UPDATE e2e_writable SET value = 'world' WHERE key = 'greeting'")
+        .expect("UPDATE should succeed");
+    let status = resp.status.expect("UPDATE response should have status");
+    assert_eq!(
+        status.code.unwrap_or(-1),
+        0,
+        "UPDATE status should be OK: {:?}",
+        status.message
+    );
+
+    // 5. Verify the update
+    let rows = client
+        .query_rows("SELECT key, value FROM e2e_writable")
+        .expect("SELECT after UPDATE should succeed");
+    assert_eq!(rows.len(), 1, "should still have 1 row after UPDATE");
+    assert_eq!(
+        rows[0].get("value").map(String::as_str),
+        Some("world"),
+        "value should be updated to 'world'"
+    );
+
+    // 6. DELETE the row
+    let resp = client
+        .query("DELETE FROM e2e_writable WHERE key = 'greeting'")
+        .expect("DELETE should succeed");
+    let status = resp.status.expect("DELETE response should have status");
+    assert_eq!(
+        status.code.unwrap_or(-1),
+        0,
+        "DELETE status should be OK: {:?}",
+        status.message
+    );
+
+    // 7. Table should be empty again
+    let rows = client
+        .query_rows("SELECT * FROM e2e_writable")
+        .expect("SELECT after DELETE should succeed");
+    assert_eq!(rows.len(), 0, "table should be empty after DELETE");
+
     drop(handle);
 }
 
@@ -193,8 +357,7 @@ fn config_plugin_e2e() {
 
     std::thread::sleep(Duration::from_secs(2));
 
-    // The config plugin is called by osqueryd internally when it fetches config.
-    // We verify registration succeeded by checking the extensions list.
+    // Verify registration by checking the extensions list
     let mut client =
         ExtensionManagerClient::connect_with_path(OSQUERY_SOCKET).expect("should connect");
     let extensions = client.extensions().expect("extensions should succeed");
