@@ -212,18 +212,13 @@ impl ExtensionManagerServer {
         self.uuid
     }
 
-    /// `register_plugin` adds an `OsqueryPlugin` to this extension manager registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the registry lock is poisoned.
     /// Add an `OsqueryPlugin` to this extension manager registry.
     ///
     /// # Errors
     ///
     /// Returns an error if a plugin with the same name and registry already exists,
     /// or if the registry lock is poisoned.
-    pub fn register_plugin(&mut self, plugin: Box<dyn OsqueryPlugin>) -> Result<()> {
+    pub fn register_plugin(&mut self, plugin: impl OsqueryPlugin + 'static) -> Result<()> {
         let name = plugin.name().to_string();
         let registry_name = plugin.registry_name();
         let mut registry = self.registry.lock().map_err(|_| "registry lock poisoned")?;
@@ -234,7 +229,7 @@ impl ExtensionManagerServer {
             )
             .into());
         }
-        plugins.insert(name, Arc::new(Mutex::new(plugin)));
+        plugins.insert(name, Arc::new(Mutex::new(Box::new(plugin))));
         Ok(())
     }
 
@@ -247,8 +242,18 @@ impl ExtensionManagerServer {
         &mut self,
         plugins: impl IntoIterator<Item = Box<dyn OsqueryPlugin>>,
     ) -> Result<()> {
+        let mut registry = self.registry.lock().map_err(|_| "registry lock poisoned")?;
         for plugin in plugins {
-            self.register_plugin(plugin)?;
+            let name = plugin.name().to_string();
+            let registry_name = plugin.registry_name();
+            let entries = registry.entry(registry_name).or_default();
+            if entries.contains_key(&name) {
+                return Err(format!(
+                    "plugin \"{name}\" already registered in {registry_name} registry"
+                )
+                .into());
+            }
+            entries.insert(name, Arc::new(Mutex::new(plugin)));
         }
         Ok(())
     }
@@ -270,9 +275,9 @@ impl ExtensionManagerServer {
         Ok(ext_registry)
     }
 
-    /// `register_extension` registers the extension and plugins.
-    /// All plugins should be registered with `register_plugin()` before calling `register_extension()`.
-    /// Return the `ExtensionRouteUUID`
+    /// Register the extension and plugins.
+    /// All plugins should be registered with `register_plugin()` before calling this method.
+    /// Returns the `ExtensionRouteUUID`.
     fn register_extension(&mut self) -> Result<i64> {
         let registry = self.gen_registry()?;
         let response = self
@@ -314,7 +319,7 @@ impl ExtensionManagerServer {
         self.uuid.ok_or_else(|| "uuid returned nil".into())
     }
 
-    /// start open a new thread and begins listening for requests from the osquery process.
+    /// Open a new thread and begin listening for requests from the osquery process.
     /// All plugins should be registered with `register_plugin()` before calling `start()`.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, shutdown)))]
     fn start(&mut self, shutdown: ShutdownSignal) -> Result<()> {
@@ -578,7 +583,7 @@ mod tests {
     #[serial]
     fn register_plugin() {
         let name = "test_plugin";
-        let plugin = Box::new(mock::MockPlugin::new(name, RegistryName::Table));
+        let plugin = mock::MockPlugin::new(name, RegistryName::Table);
         let mut server = init_server();
 
         server.register_plugin(plugin).unwrap();
@@ -597,7 +602,7 @@ mod tests {
     #[serial]
     fn gen_registry() {
         let name = "test_plugin";
-        let plugin = Box::new(mock::MockPlugin::new(name, RegistryName::Table));
+        let plugin = mock::MockPlugin::new(name, RegistryName::Table);
         let mut server = init_server();
 
         server.register_plugin(plugin).unwrap();
@@ -617,7 +622,7 @@ mod tests {
     #[serial]
     fn register_extension() {
         let name = "test_plugin";
-        let plugin = Box::new(mock::MockPlugin::new(name, RegistryName::Table));
+        let plugin = mock::MockPlugin::new(name, RegistryName::Table);
         let mut server = init_server();
 
         server.register_plugin(plugin).unwrap();
@@ -786,7 +791,7 @@ mod tests {
     #[test]
     #[ignore = "requires a running osqueryd extension socket"]
     #[serial]
-    fn new_with_opts() {
+    fn builder_custom_options() {
         let server = ExtensionManagerServer::builder("test_opts", String::from(SOCKET))
             .version("1.0.0")
             .timeout(time::Duration::from_secs(2))

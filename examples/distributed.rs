@@ -1,6 +1,5 @@
 use osquery_rs_sdk::{
-    plugin::distributed::{DistributedPlugin, QueriesRequest, QueryResponse},
-    ExtensionManagerServer, Result,
+    DistributedPlugin, ExtensionManagerServer, QueriesRequest, QueryResponse, Result,
 };
 use std::collections::BTreeMap;
 
@@ -10,12 +9,12 @@ const OSQUERY_SOCKET: &str = "/var/osquery/osquery.em";
 const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 
 fn main() -> Result<()> {
-    let mut server = ExtensionManagerServer::new("example_distributed", OSQUERY_SOCKET).unwrap();
-    server.register_plugin(Box::new(DistributedPlugin::new(
+    let mut server = ExtensionManagerServer::new("example_distributed", OSQUERY_SOCKET)?;
+    server.register_plugin(DistributedPlugin::new(
         "example_distributed",
         get_queries,
         write_results,
-    )))?;
+    ))?;
     server.run()
 }
 

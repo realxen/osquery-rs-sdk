@@ -28,9 +28,19 @@ pub mod plugin;
 pub mod mock;
 
 #[cfg(feature = "client")]
-pub use crate::client::*;
+pub use crate::client::{ExtensionManager, ExtensionManagerClient};
+
 #[cfg(feature = "server")]
-pub use crate::server::*;
+pub use crate::server::{
+    ExtensionManagerServer, ExtensionManagerServerBuilder, OsqueryPlugin, RegistryName,
+};
+
+#[cfg(feature = "plugins")]
+pub use crate::plugin::{
+    ColumnDefinition, ColumnType, ConfigPlugin, Constraint, ConstraintList, DistributedPlugin,
+    InvalidOperator, LogType, LoggerPlugin, Operator, QueriesRequest, QueryContext, QueryResponse,
+    Stats, Table, TablePlugin,
+};
 
 /// Result type used throughout the plugin APIs.
 pub type Result<T> = result::Result<T, Error>;

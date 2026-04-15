@@ -1,7 +1,4 @@
-use osquery_rs_sdk::{
-    plugin::logger::{LogType, LoggerPlugin},
-    ExtensionManagerServer, Result,
-};
+use osquery_rs_sdk::{ExtensionManagerServer, LogType, LoggerPlugin, Result};
 
 #[cfg(unix)]
 const OSQUERY_SOCKET: &str = "/var/osquery/osquery.em";
@@ -9,8 +6,8 @@ const OSQUERY_SOCKET: &str = "/var/osquery/osquery.em";
 const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 
 fn main() -> Result<()> {
-    let mut server = ExtensionManagerServer::new("my_logger", OSQUERY_SOCKET).unwrap();
-    server.register_plugin(Box::new(LoggerPlugin::new("my_logger", log_string)))?;
+    let mut server = ExtensionManagerServer::new("my_logger", OSQUERY_SOCKET)?;
+    server.register_plugin(LoggerPlugin::new("my_logger", log_string))?;
     server.run()
 }
 

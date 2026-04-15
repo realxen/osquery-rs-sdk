@@ -188,7 +188,7 @@ impl ExtensionManagerClient {
 
     /// Create a new client communicating to osquery over the provided transports.
     #[must_use]
-    pub fn new_with_proto(
+    pub fn from_protocols(
         input_protocol: Box<dyn TInputProtocol + Send>,
         output_protocol: Box<dyn TOutputProtocol + Send>,
     ) -> Self {
@@ -272,7 +272,7 @@ impl ExtensionManagerClient {
         self.client.options()
     }
 
-    /// `register_extension` registers the extension plugins with the osquery process.
+    /// Register the extension plugins with the osquery process.
     ///
     /// # Errors
     ///
@@ -286,7 +286,7 @@ impl ExtensionManagerClient {
         self.client.register_extension(info, registry)
     }
 
-    /// `deregister_extension` de-registers the extension plugins with the osquery process.
+    /// De-register the extension plugins with the osquery process.
     ///
     /// # Errors
     ///
@@ -323,9 +323,9 @@ impl ExtensionManagerClient {
         self.client.get_query_columns(sql.to_string())
     }
 
-    /// `query_rows` is a helper that executes the requested query and returns the `TResults`.
-    /// It handles checking both the transport level `TErrors` and the osquery internal `TErrors`
-    /// by returning a Thrift `TError` type.
+    /// Execute a query and return the results as a `Vec` of rows.
+    /// Handles checking both transport-level errors and osquery internal errors
+    /// by returning a Thrift error type.
     ///
     /// # Errors
     ///
@@ -348,8 +348,8 @@ impl ExtensionManagerClient {
         }
     }
 
-    /// `query_row` behaves similarly to `query_rows`, but it returns an `TError` if the query
-    /// does not return exactly one row.
+    /// Execute a query and return exactly one row.
+    /// Returns an error if the query does not produce exactly one row.
     ///
     /// # Errors
     ///
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     #[ignore = "requires a running osqueryd extension socket"]
     #[serial]
-    fn new_with_timeout_connects() {
+    fn connect_with_timeout_connects() {
         let client =
             ExtensionManagerClient::connect_with_timeout(TEST_SOCKET, Duration::from_secs(5));
         assert!(client.is_ok(), "should connect to running osqueryd");

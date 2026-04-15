@@ -1,4 +1,7 @@
-use crate::{osquery, server::*};
+use crate::{
+    osquery,
+    server::{OsqueryPlugin, RegistryName},
+};
 
 pub const STATUS_CODE: i32 = 9999;
 

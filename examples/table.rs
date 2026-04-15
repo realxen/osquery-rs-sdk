@@ -1,6 +1,6 @@
 use osquery_rs_sdk::{
-    plugin::table::{ColumnDefinition, QueryContext, Table, TablePlugin},
-    ExtensionManagerClient, ExtensionManagerServer, Result,
+    ColumnDefinition, ExtensionManagerClient, ExtensionManagerServer, QueryContext, Result, Table,
+    TablePlugin,
 };
 use std::{collections::BTreeMap, io::stdin, time::Duration};
 
@@ -10,12 +10,12 @@ const OSQUERY_SOCKET: &str = "/var/osquery/osquery.em";
 const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 
 fn example_extension() -> Result<()> {
-    let mut server = ExtensionManagerServer::new("example_table_ext", OSQUERY_SOCKET).unwrap();
-    server.register_plugin(Box::new(TablePlugin::new(
+    let mut server = ExtensionManagerServer::new("example_table_ext", OSQUERY_SOCKET)?;
+    server.register_plugin(TablePlugin::new(
         "example_table",
         example_columns(),
         example_generate,
-    )))?;
+    ))?;
     server.run()
 }
 

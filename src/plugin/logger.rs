@@ -15,7 +15,6 @@ pub enum LogType {
     Status,
     String,
     Log,
-    Unknown,
 }
 
 impl fmt::Display for LogType {
@@ -27,7 +26,6 @@ impl fmt::Display for LogType {
             LogType::Status => write!(f, "status"),
             LogType::String => write!(f, "string"),
             LogType::Log => write!(f, "log"),
-            LogType::Unknown => write!(f, "unknown log request"),
         }
     }
 }
