@@ -1,36 +1,35 @@
 use crate::{osquery, server::*};
-use std::sync::Arc;
 
 pub const STATUS_CODE: i32 = 9999;
 
 pub struct MockPlugin {
-    name: Arc<str>,
+    name: String,
     rname: RegistryName,
 }
 
 impl MockPlugin {
-    pub fn new(name: &str, rname: RegistryName) -> Box<Self> {
-        Box::new(Self {
-            name: Arc::from(name),
+    pub fn new(name: &str, rname: RegistryName) -> Self {
+        Self {
+            name: name.to_string(),
             rname,
-        })
+        }
     }
 }
 
 impl OsqueryPlugin for MockPlugin {
-    fn name(&self) -> Arc<str> {
-        Arc::clone(&self.name)
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn registry_name(&self) -> &RegistryName {
-        &self.rname
+    fn registry_name(&self) -> RegistryName {
+        self.rname
     }
 
-    fn routes(&mut self) -> osquery::ExtensionPluginResponse {
+    fn routes(&self) -> osquery::ExtensionPluginResponse {
         osquery::ExtensionPluginResponse::new()
     }
 
-    fn ping(&mut self) -> osquery::ExtensionStatus {
+    fn ping(&self) -> osquery::ExtensionStatus {
         todo!()
     }
 
@@ -46,7 +45,7 @@ impl OsqueryPlugin for MockPlugin {
     }
 }
 
-/// MockExtensionServerHandler impl the ExtensionSyncHandler interface to mock a server hanlder
+/// MockExtensionServerHandler impl the ExtensionSyncHandler interface to mock a server handler
 #[allow(dead_code)]
 pub struct MockExtensionServerHandler {}
 

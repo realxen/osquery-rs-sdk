@@ -13,15 +13,14 @@
 //!
 //! ```rust,no_run
 //! use osquery_rs_sdk::mock::MockExtensionManager;
-//! use osquery_rs_sdk::ServerOption;
 //!
 //! let mock = MockExtensionManager::new();
-//! // Use as a server client:
-//! // ServerOption::WithClient(Box::new(mock))
+//! // Use as a server client via builder:
+//! // ExtensionManagerServer::builder("ext", socket).client(Box::new(mock)).build()
 //! ```
 
 use crate::{client::ExtensionManager, osquery};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use thrift::Result as TResult;
 
 // ---------------------------------------------------------------------------
@@ -33,11 +32,7 @@ type CloseFn = Box<dyn FnMut() + Send>;
 type PingFn = Box<dyn FnMut() -> TResult<osquery::ExtensionStatus> + Send>;
 
 type CallFn = Box<
-    dyn FnMut(
-            String,
-            String,
-            osquery::ExtensionPluginRequest,
-        ) -> TResult<osquery::ExtensionResponse>
+    dyn FnMut(&str, &str, osquery::ExtensionPluginRequest) -> TResult<osquery::ExtensionResponse>
         + Send,
 >;
 
@@ -58,7 +53,7 @@ type RegisterExtensionFn = Box<
 type DeregisterExtensionFn =
     Box<dyn FnMut(osquery::ExtensionRouteUUID) -> TResult<osquery::ExtensionStatus> + Send>;
 
-type QueryFn = Box<dyn FnMut(String) -> TResult<osquery::ExtensionResponse> + Send>;
+type QueryFn = Box<dyn FnMut(&str) -> TResult<osquery::ExtensionResponse> + Send>;
 
 // ---------------------------------------------------------------------------
 // MockExtensionManager
@@ -67,89 +62,175 @@ type QueryFn = Box<dyn FnMut(String) -> TResult<osquery::ExtensionResponse> + Se
 /// A mock implementation of [`ExtensionManager`] for testing.
 ///
 /// Each trait method has a corresponding `*_fn` field that can be set to
-/// override the default behavior, and a `*_invoked` field that tracks
-/// whether the method was called.
+/// override the default behavior, and a `*_call_count` counter that tracks
+/// how many times the method was called.
 ///
 /// By default, methods return success with reasonable values (status code 0,
 /// empty responses). Set a `*_fn` field to inject custom behavior.
 pub struct MockExtensionManager {
     /// Override for [`ExtensionManager::close`]. Default: no-op.
-    pub close_fn: Option<Mutex<CloseFn>>,
-    /// Whether `close` was called.
-    pub close_invoked: bool,
+    pub close_fn: Option<CloseFn>,
+    /// Number of times `close` was called.
+    pub close_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::ping`]. Default: returns OK status.
-    pub ping_fn: Option<Mutex<PingFn>>,
-    /// Whether `ping` was called.
-    pub ping_invoked: bool,
+    pub ping_fn: Option<PingFn>,
+    /// Number of times `ping` was called.
+    pub ping_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::call`]. Default: returns OK with empty response.
-    pub call_fn: Option<Mutex<CallFn>>,
-    /// Whether `call` was called.
-    pub call_invoked: bool,
+    pub call_fn: Option<CallFn>,
+    /// Number of times `call` was called.
+    pub call_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::shutdown`]. Default: returns Ok(()).
-    pub shutdown_fn: Option<Mutex<ShutdownMockFn>>,
-    /// Whether `shutdown` was called.
-    pub shutdown_invoked: bool,
+    pub shutdown_fn: Option<ShutdownMockFn>,
+    /// Number of times `shutdown` was called.
+    pub shutdown_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::extensions`]. Default: returns empty list.
-    pub extensions_fn: Option<Mutex<ExtensionsFn>>,
-    /// Whether `extensions` was called.
-    pub extensions_invoked: bool,
+    pub extensions_fn: Option<ExtensionsFn>,
+    /// Number of times `extensions` was called.
+    pub extensions_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::options`]. Default: returns empty list.
-    pub options_fn: Option<Mutex<OptionsFn>>,
-    /// Whether `options` was called.
-    pub options_invoked: bool,
+    pub options_fn: Option<OptionsFn>,
+    /// Number of times `options` was called.
+    pub options_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::register_extension`]. Default: returns OK status with UUID 1.
-    pub register_extension_fn: Option<Mutex<RegisterExtensionFn>>,
-    /// Whether `register_extension` was called.
-    pub register_extension_invoked: bool,
+    pub register_extension_fn: Option<RegisterExtensionFn>,
+    /// Number of times `register_extension` was called.
+    pub register_extension_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::deregister_extension`]. Default: returns OK status.
-    pub deregister_extension_fn: Option<Mutex<DeregisterExtensionFn>>,
-    /// Whether `deregister_extension` was called.
-    pub deregister_extension_invoked: bool,
+    pub deregister_extension_fn: Option<DeregisterExtensionFn>,
+    /// Number of times `deregister_extension` was called.
+    pub deregister_extension_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::query`]. Default: returns OK with empty response.
-    pub query_fn: Option<Mutex<QueryFn>>,
-    /// Whether `query` was called.
-    pub query_invoked: bool,
+    pub query_fn: Option<QueryFn>,
+    /// Number of times `query` was called.
+    pub query_call_count: AtomicUsize,
 
     /// Override for [`ExtensionManager::get_query_columns`]. Default: returns OK with empty response.
-    pub get_query_columns_fn: Option<Mutex<QueryFn>>,
-    /// Whether `get_query_columns` was called.
-    pub get_query_columns_invoked: bool,
+    pub get_query_columns_fn: Option<QueryFn>,
+    /// Number of times `get_query_columns` was called.
+    pub get_query_columns_call_count: AtomicUsize,
 }
 
 impl MockExtensionManager {
-    /// Creates a new mock with default (success) behavior for all methods.
-    #[must_use] 
+    /// Create a new mock with default (success) behavior for all methods.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             close_fn: None,
-            close_invoked: false,
+            close_call_count: AtomicUsize::new(0),
             ping_fn: None,
-            ping_invoked: false,
+            ping_call_count: AtomicUsize::new(0),
             call_fn: None,
-            call_invoked: false,
+            call_call_count: AtomicUsize::new(0),
             shutdown_fn: None,
-            shutdown_invoked: false,
+            shutdown_call_count: AtomicUsize::new(0),
             extensions_fn: None,
-            extensions_invoked: false,
+            extensions_call_count: AtomicUsize::new(0),
             options_fn: None,
-            options_invoked: false,
+            options_call_count: AtomicUsize::new(0),
             register_extension_fn: None,
-            register_extension_invoked: false,
+            register_extension_call_count: AtomicUsize::new(0),
             deregister_extension_fn: None,
-            deregister_extension_invoked: false,
+            deregister_extension_call_count: AtomicUsize::new(0),
             query_fn: None,
-            query_invoked: false,
+            query_call_count: AtomicUsize::new(0),
             get_query_columns_fn: None,
-            get_query_columns_invoked: false,
+            get_query_columns_call_count: AtomicUsize::new(0),
         }
+    }
+
+    /// Return whether `close` was called at least once.
+    #[must_use]
+    pub fn close_invoked(&self) -> bool {
+        self.close_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `ping` was called at least once.
+    #[must_use]
+    pub fn ping_invoked(&self) -> bool {
+        self.ping_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `call` was called at least once.
+    #[must_use]
+    pub fn call_invoked(&self) -> bool {
+        self.call_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `shutdown` was called at least once.
+    #[must_use]
+    pub fn shutdown_invoked(&self) -> bool {
+        self.shutdown_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `extensions` was called at least once.
+    #[must_use]
+    pub fn extensions_invoked(&self) -> bool {
+        self.extensions_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `options` was called at least once.
+    #[must_use]
+    pub fn options_invoked(&self) -> bool {
+        self.options_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `register_extension` was called at least once.
+    #[must_use]
+    pub fn register_extension_invoked(&self) -> bool {
+        self.register_extension_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `deregister_extension` was called at least once.
+    #[must_use]
+    pub fn deregister_extension_invoked(&self) -> bool {
+        self.deregister_extension_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `query` was called at least once.
+    #[must_use]
+    pub fn query_invoked(&self) -> bool {
+        self.query_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `get_query_columns` was called at least once.
+    #[must_use]
+    pub fn get_query_columns_invoked(&self) -> bool {
+        self.get_query_columns_call_count.load(Ordering::Relaxed) > 0
+    }
+}
+
+impl std::fmt::Debug for MockExtensionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockExtensionManager")
+            .field("close_call_count", &self.close_call_count)
+            .field("ping_call_count", &self.ping_call_count)
+            .field("call_call_count", &self.call_call_count)
+            .field("shutdown_call_count", &self.shutdown_call_count)
+            .field("extensions_call_count", &self.extensions_call_count)
+            .field("options_call_count", &self.options_call_count)
+            .field(
+                "register_extension_call_count",
+                &self.register_extension_call_count,
+            )
+            .field(
+                "deregister_extension_call_count",
+                &self.deregister_extension_call_count,
+            )
+            .field("query_call_count", &self.query_call_count)
+            .field(
+                "get_query_columns_call_count",
+                &self.get_query_columns_call_count,
+            )
+            .finish()
     }
 }
 
@@ -169,72 +250,55 @@ fn ok_response() -> osquery::ExtensionResponse {
     osquery::ExtensionResponse::new(ok_status(), None)
 }
 
-#[allow(clippy::expect_used)] // Mutex poisoning in test mocks is a programmer error; panic is correct.
 impl ExtensionManager for MockExtensionManager {
     fn close(&mut self) {
-        self.close_invoked = true;
-        if let Some(f) = &self.close_fn {
-            let mut guard = f.lock().expect("mock fn lock poisoned");
-            guard();
+        self.close_call_count.fetch_add(1, Ordering::Relaxed);
+        if let Some(f) = &mut self.close_fn {
+            f();
         }
     }
 
     fn ping(&mut self) -> TResult<osquery::ExtensionStatus> {
-        self.ping_invoked = true;
-        match &self.ping_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard()
-            }
+        self.ping_call_count.fetch_add(1, Ordering::Relaxed);
+        match &mut self.ping_fn {
+            Some(f) => f(),
             None => Ok(ok_status()),
         }
     }
 
     fn call(
         &mut self,
-        registry: String,
-        item: String,
+        registry: &str,
+        item: &str,
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse> {
-        self.call_invoked = true;
-        match &self.call_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard(registry, item, request)
-            }
+        self.call_call_count.fetch_add(1, Ordering::Relaxed);
+        match &mut self.call_fn {
+            Some(f) => f(registry, item, request),
             None => Ok(ok_response()),
         }
     }
 
     fn shutdown(&mut self) -> TResult<()> {
-        self.shutdown_invoked = true;
-        match &self.shutdown_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard()
-            }
+        self.shutdown_call_count.fetch_add(1, Ordering::Relaxed);
+        match &mut self.shutdown_fn {
+            Some(f) => f(),
             None => Ok(()),
         }
     }
 
     fn extensions(&mut self) -> TResult<osquery::InternalExtensionList> {
-        self.extensions_invoked = true;
-        match &self.extensions_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard()
-            }
+        self.extensions_call_count.fetch_add(1, Ordering::Relaxed);
+        match &mut self.extensions_fn {
+            Some(f) => f(),
             None => Ok(osquery::InternalExtensionList::new()),
         }
     }
 
     fn options(&mut self) -> TResult<osquery::InternalOptionList> {
-        self.options_invoked = true;
-        match &self.options_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard()
-            }
+        self.options_call_count.fetch_add(1, Ordering::Relaxed);
+        match &mut self.options_fn {
+            Some(f) => f(),
             None => Ok(osquery::InternalOptionList::new()),
         }
     }
@@ -244,12 +308,10 @@ impl ExtensionManager for MockExtensionManager {
         info: osquery::InternalExtensionInfo,
         registry: osquery::ExtensionRegistry,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.register_extension_invoked = true;
-        match &self.register_extension_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard(info, registry)
-            }
+        self.register_extension_call_count
+            .fetch_add(1, Ordering::Relaxed);
+        match &mut self.register_extension_fn {
+            Some(f) => f(info, registry),
             None => Ok(osquery::ExtensionStatus::new(0, "OK".to_string(), Some(1))),
         }
     }
@@ -258,34 +320,27 @@ impl ExtensionManager for MockExtensionManager {
         &mut self,
         uuid: osquery::ExtensionRouteUUID,
     ) -> TResult<osquery::ExtensionStatus> {
-        self.deregister_extension_invoked = true;
-        match &self.deregister_extension_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard(uuid)
-            }
+        self.deregister_extension_call_count
+            .fetch_add(1, Ordering::Relaxed);
+        match &mut self.deregister_extension_fn {
+            Some(f) => f(uuid),
             None => Ok(ok_status()),
         }
     }
 
-    fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.query_invoked = true;
-        match &self.query_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard(sql)
-            }
+    fn query(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse> {
+        self.query_call_count.fetch_add(1, Ordering::Relaxed);
+        match &mut self.query_fn {
+            Some(f) => f(sql),
             None => Ok(ok_response()),
         }
     }
 
-    fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.get_query_columns_invoked = true;
-        match &self.get_query_columns_fn {
-            Some(f) => {
-                let mut guard = f.lock().expect("mock fn lock poisoned");
-                guard(sql)
-            }
+    fn get_query_columns(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse> {
+        self.get_query_columns_call_count
+            .fetch_add(1, Ordering::Relaxed);
+        match &mut self.get_query_columns_fn {
+            Some(f) => f(sql),
             None => Ok(ok_response()),
         }
     }
@@ -297,89 +352,126 @@ impl ExtensionManager for MockExtensionManager {
 
 #[cfg(feature = "server")]
 use crate::{OsqueryPlugin, RegistryName};
-#[cfg(feature = "server")]
-use std::sync::Arc;
 
 /// A mock implementation of [`OsqueryPlugin`] for testing.
 ///
-/// Each method has a corresponding `*_fn` field for overriding default behavior.
+/// Each method has a corresponding `*_fn` field for overriding default behavior
+/// and a `*_call_count` counter that tracks invocations.
 /// By default, `call` returns an empty response with status code 0.
 #[cfg(feature = "server")]
 pub struct MockPlugin {
-    name: Arc<str>,
+    name: String,
     registry_name: RegistryName,
 
     /// Override for [`OsqueryPlugin::call`]. Default: returns OK with empty response.
     pub call_fn: Option<
         Box<dyn FnMut(osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse + Send + Sync>,
     >,
-    /// Whether `call` was called.
-    pub call_invoked: bool,
+    /// Number of times `call` was called.
+    pub call_call_count: AtomicUsize,
 
     /// Override for [`OsqueryPlugin::routes`]. Default: returns empty response.
-    pub routes_fn: Option<Box<dyn FnMut() -> osquery::ExtensionPluginResponse + Send + Sync>>,
-    /// Whether `routes` was called.
-    pub routes_invoked: bool,
+    pub routes_fn: Option<Box<dyn Fn() -> osquery::ExtensionPluginResponse + Send + Sync>>,
+    /// Number of times `routes` was called.
+    pub routes_call_count: AtomicUsize,
 
     /// Override for [`OsqueryPlugin::ping`]. Default: returns OK status.
-    pub ping_fn: Option<Box<dyn FnMut() -> osquery::ExtensionStatus + Send + Sync>>,
-    /// Whether `ping` was called.
-    pub ping_invoked: bool,
+    pub ping_fn: Option<Box<dyn Fn() -> osquery::ExtensionStatus + Send + Sync>>,
+    /// Number of times `ping` was called.
+    pub ping_call_count: AtomicUsize,
 
     /// Override for [`OsqueryPlugin::shutdown`]. Default: no-op.
     pub shutdown_fn: Option<Box<dyn Fn() + Send + Sync>>,
-    /// Whether `shutdown` was called.
-    pub shutdown_invoked: bool,
+    /// Number of times `shutdown` was called.
+    pub shutdown_call_count: AtomicUsize,
 }
 
 #[cfg(feature = "server")]
 impl MockPlugin {
-    /// Creates a new mock plugin with the given name and registry.
-    #[must_use] 
-    pub fn new(name: &str, registry_name: RegistryName) -> Box<Self> {
-        Box::new(Self {
-            name: Arc::from(name),
+    /// Create a new mock plugin with the given name and registry.
+    #[must_use]
+    pub fn new(name: &str, registry_name: RegistryName) -> Self {
+        Self {
+            name: name.to_string(),
             registry_name,
             call_fn: None,
-            call_invoked: false,
+            call_call_count: AtomicUsize::new(0),
             routes_fn: None,
-            routes_invoked: false,
+            routes_call_count: AtomicUsize::new(0),
             ping_fn: None,
-            ping_invoked: false,
+            ping_call_count: AtomicUsize::new(0),
             shutdown_fn: None,
-            shutdown_invoked: false,
-        })
+            shutdown_call_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Return whether `call` was called at least once.
+    #[must_use]
+    pub fn call_invoked(&self) -> bool {
+        self.call_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `routes` was called at least once.
+    #[must_use]
+    pub fn routes_invoked(&self) -> bool {
+        self.routes_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `ping` was called at least once.
+    #[must_use]
+    pub fn ping_invoked(&self) -> bool {
+        self.ping_call_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Return whether `shutdown` was called at least once.
+    #[must_use]
+    pub fn shutdown_invoked(&self) -> bool {
+        self.shutdown_call_count.load(Ordering::Relaxed) > 0
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::fmt::Debug for MockPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockPlugin")
+            .field("name", &self.name)
+            .field("registry_name", &self.registry_name)
+            .field("call_call_count", &self.call_call_count)
+            .field("routes_call_count", &self.routes_call_count)
+            .field("ping_call_count", &self.ping_call_count)
+            .field("shutdown_call_count", &self.shutdown_call_count)
+            .finish()
     }
 }
 
 #[cfg(feature = "server")]
 impl OsqueryPlugin for MockPlugin {
-    fn name(&self) -> Arc<str> {
-        Arc::clone(&self.name)
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn registry_name(&self) -> &RegistryName {
-        &self.registry_name
+    fn registry_name(&self) -> RegistryName {
+        self.registry_name
     }
 
-    fn routes(&mut self) -> osquery::ExtensionPluginResponse {
-        self.routes_invoked = true;
-        match &mut self.routes_fn {
+    fn routes(&self) -> osquery::ExtensionPluginResponse {
+        self.routes_call_count.fetch_add(1, Ordering::Relaxed);
+        match &self.routes_fn {
             Some(f) => f(),
             None => osquery::ExtensionPluginResponse::new(),
         }
     }
 
-    fn ping(&mut self) -> osquery::ExtensionStatus {
-        self.ping_invoked = true;
-        match &mut self.ping_fn {
+    fn ping(&self) -> osquery::ExtensionStatus {
+        self.ping_call_count.fetch_add(1, Ordering::Relaxed);
+        match &self.ping_fn {
             Some(f) => f(),
             None => osquery::ExtensionStatus::new(0, "OK".to_string(), None),
         }
     }
 
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse {
-        self.call_invoked = true;
+        self.call_call_count.fetch_add(1, Ordering::Relaxed);
         match &mut self.call_fn {
             Some(f) => f(req),
             None => ok_response(),
@@ -387,8 +479,7 @@ impl OsqueryPlugin for MockPlugin {
     }
 
     fn shutdown(&self) {
-        // Note: shutdown takes &self so we can't set shutdown_invoked here.
-        // Use the shutdown_fn for custom behavior.
+        self.shutdown_call_count.fetch_add(1, Ordering::Relaxed);
         if let Some(f) = &self.shutdown_fn {
             f();
         }
@@ -408,25 +499,21 @@ mod tests {
         let mut mock = MockExtensionManager::new();
 
         // All invoked flags start false
-        assert!(!mock.ping_invoked);
-        assert!(!mock.call_invoked);
-        assert!(!mock.close_invoked);
+        assert!(!mock.ping_invoked());
+        assert!(!mock.call_invoked());
+        assert!(!mock.close_invoked());
 
         // Ping returns OK by default
         let status = mock.ping().unwrap();
         assert_eq!(status.code.unwrap(), 0);
-        assert!(mock.ping_invoked);
+        assert!(mock.ping_invoked());
 
         // Call returns OK by default
         let resp = mock
-            .call(
-                "table".to_string(),
-                "test".to_string(),
-                osquery::ExtensionPluginRequest::new(),
-            )
+            .call("table", "test", osquery::ExtensionPluginRequest::new())
             .unwrap();
         assert_eq!(resp.status.unwrap().code.unwrap(), 0);
-        assert!(mock.call_invoked);
+        assert!(mock.call_invoked());
 
         // Register returns OK with UUID 1
         let status = mock
@@ -437,30 +524,30 @@ mod tests {
             .unwrap();
         assert_eq!(status.code.unwrap(), 0);
         assert_eq!(status.uuid.unwrap(), 1);
-        assert!(mock.register_extension_invoked);
+        assert!(mock.register_extension_invoked());
     }
 
     #[test]
     fn mock_extension_manager_custom_fns() {
         let mut mock = MockExtensionManager::new();
-        mock.ping_fn = Some(Mutex::new(Box::new(|| {
+        mock.ping_fn = Some(Box::new(|| {
             Ok(osquery::ExtensionStatus::new(
                 1,
                 "custom error".to_string(),
                 None,
             ))
-        })));
+        }));
 
         let status = mock.ping().unwrap();
         assert_eq!(status.code.unwrap(), 1);
         assert_eq!(status.message.unwrap(), "custom error");
-        assert!(mock.ping_invoked);
+        assert!(mock.ping_invoked());
     }
 
     #[test]
     fn mock_extension_manager_query() {
         let mut mock = MockExtensionManager::new();
-        mock.query_fn = Some(Mutex::new(Box::new(|sql| {
+        mock.query_fn = Some(Box::new(|sql| {
             assert_eq!(sql, "SELECT 1");
             Ok(osquery::ExtensionResponse::new(
                 osquery::ExtensionStatus::new(0, "OK".to_string(), None),
@@ -469,19 +556,19 @@ mod tests {
                     "1".to_string(),
                 )])]),
             ))
-        })));
+        }));
 
-        let resp = mock.query("SELECT 1".to_string()).unwrap();
-        assert!(mock.query_invoked);
+        let resp = mock.query("SELECT 1").unwrap();
+        assert!(mock.query_invoked());
         assert_eq!(resp.response.unwrap().len(), 1);
     }
 
     #[test]
     fn mock_extension_manager_close_tracking() {
         let mut mock = MockExtensionManager::new();
-        assert!(!mock.close_invoked);
+        assert!(!mock.close_invoked());
         mock.close();
-        assert!(mock.close_invoked);
+        assert!(mock.close_invoked());
     }
 
     #[cfg(feature = "server")]
@@ -493,13 +580,13 @@ mod tests {
         fn mock_plugin_defaults() {
             let mut plugin = MockPlugin::new("test_table", RegistryName::Table);
 
-            assert_eq!(&*plugin.name(), "test_table");
-            assert_eq!(*plugin.registry_name(), RegistryName::Table);
+            assert_eq!(plugin.name(), "test_table");
+            assert_eq!(plugin.registry_name(), RegistryName::Table);
 
             // Call returns OK by default
             let resp = plugin.call(osquery::ExtensionPluginRequest::new());
             assert_eq!(resp.status.unwrap().code.unwrap(), 0);
-            assert!(plugin.call_invoked);
+            assert!(plugin.call_invoked());
         }
 
         #[test]
@@ -514,7 +601,7 @@ mod tests {
 
             let resp = plugin.call(osquery::ExtensionPluginRequest::new());
             assert_eq!(resp.status.unwrap().code.unwrap(), 42);
-            assert!(plugin.call_invoked);
+            assert!(plugin.call_invoked());
         }
     }
 }

@@ -3,7 +3,6 @@
 //! See <https://osquery.readthedocs.io/en/latest/development/config-plugins>/ for more.
 use crate::{osquery, OsqueryPlugin, RegistryName, Result};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// A map that should use the source name as key, and the config JSON as values.
 type Config = BTreeMap<String, String>;
@@ -12,31 +11,29 @@ type Config = BTreeMap<String, String>;
 /// * [`GenFunc`]: returns a map that should use the source name as key, and the config
 ///   JSON as values.
 pub struct ConfigPlugin<GenFunc: FnMut() -> Result<Config>> {
-    name: Arc<str>,
-    registry: RegistryName,
+    name: String,
     generate: GenFunc,
 }
 
 impl<GenFunc: FnMut() -> Result<Config>> ConfigPlugin<GenFunc> {
-    /// creates a `ConfigPlugin` plugin.
+    /// Create a `ConfigPlugin` plugin.
     /// * [`GenFunc`]: should return a [`Result<BTreeMap<String, String>>`]
     ///   that uses the source name as key, and the config JSON as values.
-    pub fn new(name: &str, generate: GenFunc) -> Box<Self> {
-        Box::new(Self {
-            name: Arc::from(name),
-            registry: RegistryName::Config,
+    pub fn new(name: &str, generate: GenFunc) -> Self {
+        Self {
+            name: name.to_string(),
             generate,
-        })
+        }
     }
 }
 
 impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigPlugin<GenFunc> {
-    fn name(&self) -> std::sync::Arc<str> {
-        Arc::clone(&self.name)
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn registry_name(&self) -> &RegistryName {
-        &self.registry
+    fn registry_name(&self) -> RegistryName {
+        RegistryName::Config
     }
 
     #[cfg_attr(
@@ -54,7 +51,11 @@ impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigP
                     #[cfg(feature = "tracing")]
                     tracing::error!("error getting config: {}", err);
                     osquery::ExtensionResponse::new(
-                        osquery::ExtensionStatus::new(1, err.message("error getting config"), None),
+                        osquery::ExtensionStatus::new(
+                            1,
+                            err.context("error getting config").to_string(),
+                            None,
+                        ),
                         None,
                     )
                 }
@@ -64,7 +65,7 @@ impl<GenFunc: FnMut() -> Result<Config> + Send + Sync> OsqueryPlugin for ConfigP
                 None,
             ),
             None => osquery::ExtensionResponse::new(
-                osquery::ExtensionStatus::new(1, String::from("action is nil"), None),
+                osquery::ExtensionStatus::new(1, String::from("missing action"), None),
                 None,
             ),
         }
@@ -88,8 +89,8 @@ mod tests {
             )]))
         });
 
-        assert_eq!(&*plugin.name(), "mock");
-        assert_eq!(*plugin.registry_name(), RegistryName::Config);
+        assert_eq!(plugin.name(), "mock");
+        assert_eq!(plugin.registry_name(), RegistryName::Config);
 
         let res = plugin.call(osquery::ExtensionPluginRequest::from([(
             String::from("action"),

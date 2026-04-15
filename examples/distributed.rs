@@ -11,11 +11,11 @@ const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 
 fn main() -> Result<()> {
     let mut server = ExtensionManagerServer::new("example_distributed", OSQUERY_SOCKET).unwrap();
-    server.register_plugin(DistributedPlugin::new(
+    server.register_plugin(Box::new(DistributedPlugin::new(
         "example_distributed",
         get_queries,
         write_results,
-    ))?;
+    )))?;
     server.run()
 }
 

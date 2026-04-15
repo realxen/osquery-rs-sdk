@@ -76,7 +76,7 @@ impl Error {
     /// If called on an error, the original error becomes the
     /// [`source`](std::error::Error::source) of the returned error.
     #[must_use]
-    pub fn message(self, message: &str) -> Self {
+    pub fn context(self, message: &str) -> Self {
         Self::Context {
             message: message.to_string(),
             source: Box::new(self),
@@ -117,12 +117,6 @@ impl From<thrift::Error> for Error {
     }
 }
 
-impl From<Error> for Option<String> {
-    fn from(err: Error) -> Self {
-        Some(err.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,7 +138,7 @@ mod tests {
     #[test]
     fn error_with_msg() {
         let terr = thrift::Error::from("test");
-        let err = Error::from(terr).message("hello");
+        let err = Error::from(terr).context("hello");
         assert_eq!("hello - test: ApplicationKind(Unknown)", err.to_string());
     }
 
@@ -178,18 +172,18 @@ mod tests {
         );
         let err: Error = thrift::Error::from("thrift err msg").into();
         assert_eq!(
-            err.message("error from thrift with message").to_string(),
+            err.context("error from thrift with message").to_string(),
             "error from thrift with message - thrift err msg: ApplicationKind(Unknown)"
         );
         assert_eq!(
             Error::from("initial msg test")
-                .message("hello test")
+                .context("hello test")
                 .to_string(),
             "hello test - initial msg test"
         );
         assert_eq!(
             Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
-                .message("hello io")
+                .context("hello io")
                 .to_string(),
             "hello io - broken pipe"
         );
@@ -198,7 +192,7 @@ mod tests {
     #[test]
     fn error_source_chain() {
         let inner: Error = "inner error".into();
-        let outer = inner.message("outer context");
+        let outer = inner.context("outer context");
         // std::error::Error::source() should return the inner error
         let source = std::error::Error::source(&outer);
         assert!(source.is_some(), "source should be Some");
@@ -210,10 +204,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn error_into_option_string() {
-        let err: Error = "hello".into();
-        let opt: Option<String> = err.into();
-        assert_eq!(opt, Some("hello".to_string()));
-    }
 }

@@ -10,7 +10,7 @@ const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 
 fn main() -> Result<()> {
     let mut server = ExtensionManagerServer::new("my_logger", OSQUERY_SOCKET).unwrap();
-    server.register_plugin(LoggerPlugin::new("my_logger", log_string))?;
+    server.register_plugin(Box::new(LoggerPlugin::new("my_logger", log_string)))?;
     server.run()
 }
 

@@ -14,10 +14,10 @@ use winapi::{shared::winerror, um::winbase};
 pub struct NamedPipeClient(File);
 
 impl NamedPipeClient {
-    /// A convenience function to connect to a named pipe.
+    /// Connect to a named pipe by path.
     ///
-    /// connects to a named pipe by path, timing out if the connection
-    /// takes longer than a default timeout of 2 seconds. (We do not use WaitNamedPipe.)
+    /// Times out if the connection takes longer than a default timeout of 2 seconds.
+    /// (We do not use WaitNamedPipe.)
     pub fn connect<P: AsRef<Path>>(path: P) -> io::Result<NamedPipeClient> {
         let mut rw = OpenOptions::new();
         rw.read(true).write(true).custom_flags(

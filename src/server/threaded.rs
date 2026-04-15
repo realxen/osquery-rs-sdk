@@ -1,4 +1,4 @@
-//! Half-asynchrounous, half-synchrounous implementation of an [Apache Thrift] server.
+//! Half-asynchronous, half-synchronous implementation of an [Apache Thrift] server.
 //! Full compatibility with code generation from the [`thrift`] crate (fully
 //! synchronous), hence the almost-asynchronous (or half async, half sync)  model.
 
@@ -24,7 +24,7 @@ use tokio::net::UnixListener;
 /// Dropping the handle or calling [`stop`](StopHandle::stop) signals the
 /// server's accept loop to exit. The server listener thread will finish
 /// after completing any in-flight request.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StopHandle {
     sender: watch::Sender<bool>,
 }
@@ -134,8 +134,8 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
         })
     }
 
-    /// handles incoming connections, keeping a `BufReader`: All read/write operations happen
-    /// asynchronously (leveraging [`tokio`]). processing happen synchronously within tokio's runtime.
+    /// Handle incoming connections, keeping a `BufReader`. All read/write operations happen
+    /// asynchronously (leveraging [`tokio`]). Processing happens synchronously within tokio's runtime.
     ///
     /// # Panics
     /// This function panics if thread-local runtime is not set.
@@ -150,6 +150,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
             let mut write_buf = Vec::with_capacity(4096);
             loop {
                 match read_transport.fill_buf().await {
+                    Ok(s) if s.is_empty() => break, // EOF: peer closed connection
                     Ok(s) => {
                         let buf_count = s.len();
                         write_buf.clear();
@@ -179,6 +180,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                     Err(e) => {
                         #[cfg(feature = "tracing")]
                         tracing::error!("error reading stream: {e:?}");
+                        break;
                     }
                 }
             }
@@ -219,7 +221,7 @@ mod tests {
     #[test]
     fn client_ping() {
         let (test_socket, _stop) = init_server("client_ping_me");
-        let mut client = client::ExtensionManagerClient::new_with_path(test_socket).unwrap();
+        let mut client = client::ExtensionManagerClient::connect_with_path(test_socket).unwrap();
         client.ping().unwrap();
     }
 
@@ -254,7 +256,7 @@ mod tests {
             // The sender endpoint can be copied
             let thread_tx = tx.clone();
             let child = std::thread::spawn(move || {
-                let mut client = client::ExtensionManagerClient::new_with_path(test_socket)
+                let mut client = client::ExtensionManagerClient::connect_with_path(test_socket)
                     .unwrap_or_else(|e| panic!("error connecting id: {} {}", id, e));
                 for i in 0..(NTHREADS * 100) {
                     client
@@ -275,7 +277,7 @@ mod tests {
         let (test_socket, stop) = init_server("stop_handle");
 
         // Verify the server is running
-        let mut client = client::ExtensionManagerClient::new_with_path(&test_socket).unwrap();
+        let mut client = client::ExtensionManagerClient::connect_with_path(&test_socket).unwrap();
         client.ping().unwrap();
 
         // Stop the server
@@ -285,7 +287,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         // New connections should fail
-        let result = client::ExtensionManagerClient::new_with_path(&test_socket);
+        let result = client::ExtensionManagerClient::connect_with_path(&test_socket);
         assert!(result.is_err(), "should not connect after stop");
     }
 }

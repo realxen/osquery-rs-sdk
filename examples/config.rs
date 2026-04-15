@@ -34,6 +34,9 @@ fn generate_configs() -> Result<BTreeMap<String, String>> {
 
 fn main() -> Result<()> {
     let mut server = ExtensionManagerServer::new("example_extension", OSQUERY_SOCKET)?;
-    server.register_plugin(ConfigPlugin::new("example_config", generate_configs))?;
+    server.register_plugin(Box::new(ConfigPlugin::new(
+        "example_config",
+        generate_configs,
+    )))?;
     server.run()
 }

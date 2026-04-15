@@ -1,8 +1,6 @@
 fn main() {
-    let mut client = osquery_rs_sdk::ExtensionManagerClient::new().unwrap();
-    let resp = client
-        .query(String::from("SELECT * from USERS limit 1"))
-        .unwrap();
+    let mut client = osquery_rs_sdk::ExtensionManagerClient::connect().unwrap();
+    let resp = client.query("SELECT * from USERS limit 1").unwrap();
     match resp.response {
         Some(res) => println!("Got results: {:?}", res),
         None => {

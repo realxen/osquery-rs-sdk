@@ -18,45 +18,45 @@ type TClient = super::named_pipe::NamedPipeClient;
 /// `ExtensionManager` represents an extension manager, which handles the
 /// communication with the osquery core process.
 pub trait ExtensionManager: Send {
-    /// close closes the transport connection. After close is called,
+    /// Close the transport connection. After close is called,
     /// other methods may return errors.
-    fn close(&mut self) {}
-    /// ping requests metadata from the extension manager.
+    fn close(&mut self);
+    /// Request metadata from the extension manager.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying transport or serialization fails.
     fn ping(&mut self) -> TResult<osquery::ExtensionStatus>;
-    /// call requests a call to an extension (or core) registry plugin.
+    /// Request a call to an extension (or core) registry plugin.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying transport or serialization fails.
     fn call(
         &mut self,
-        registry: String,
-        item: String,
+        registry: &str,
+        item: &str,
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse>;
-    /// shutdown should be called to close the transport when use of the client is completed.
+    /// Shut down the remote endpoint.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying transport or serialization fails.
     fn shutdown(&mut self) -> TResult<()>;
-    /// extensions requests the list of active registered extensions.
+    /// Request the list of active registered extensions.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying transport or serialization fails.
     fn extensions(&mut self) -> TResult<osquery::InternalExtensionList>;
-    /// options requests the list of bootstrap or configuration options.
+    /// Request the list of bootstrap or configuration options.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying transport or serialization fails.
     fn options(&mut self) -> TResult<osquery::InternalOptionList>;
-    /// `register_extension` registers the extension plugins with the osquery process.
+    /// Register the extension plugins with the osquery process.
     ///
     /// # Errors
     ///
@@ -66,7 +66,7 @@ pub trait ExtensionManager: Send {
         info: osquery::InternalExtensionInfo,
         registry: osquery::ExtensionRegistry,
     ) -> TResult<osquery::ExtensionStatus>;
-    /// `deregister_extension` de-registers the extension plugins with the osquery process.
+    /// De-register the extension plugins with the osquery process.
     ///
     /// # Errors
     ///
@@ -75,24 +75,32 @@ pub trait ExtensionManager: Send {
         &mut self,
         uuid: osquery::ExtensionRouteUUID,
     ) -> TResult<osquery::ExtensionStatus>;
-    /// query requests a query to be run and returns the extension response.
+    /// Execute a query and return the extension response.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying transport or serialization fails.
-    fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse>;
-    /// `get_query_columns` requests the columns returned by the parsed query.
+    fn query(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse>;
+    /// Request the columns returned by the parsed query.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying transport or serialization fails.
-    fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse>;
+    fn get_query_columns(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse>;
 }
 
 /// `ExtensionManagerClient` is a wrapper for the osquery Thrift extensions API.
 pub struct ExtensionManagerClient {
     client: Box<dyn osquery::TExtensionManagerSyncClient + Send>,
     stream: Option<TClient>,
+}
+
+impl std::fmt::Debug for ExtensionManagerClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtensionManagerClient")
+            .field("connected", &self.stream.is_some())
+            .finish()
+    }
 }
 
 /// Polls for the socket file to exist, checking every 200ms until the
@@ -119,38 +127,38 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> std::io::Result<()> {
 
 /// `ExtensionManagerClient` is a wrapper for the osquery Thrift extensions API.
 impl ExtensionManagerClient {
-    /// creates a new client communicating to osquery over the default socket path.
+    /// Connect to osquery over the default socket path.
     ///
     /// # Errors
     ///
     /// Returns an error if the default `osqueryd` socket cannot be connected to.
-    pub fn new() -> TResult<Self> {
+    pub fn connect() -> TResult<Self> {
         #[cfg(unix)]
-        return Self::new_with_path("/var/osquery/osquery.em");
+        return Self::connect_with_path("/var/osquery/osquery.em");
         #[cfg(windows)]
-        return Self::new_with_path(r"\\.\pipe\osquery.em");
+        return Self::connect_with_path(r"\\.\pipe\osquery.em");
     }
 
-    /// create a new client communicating to osquery over the provided socket path.
+    /// Connect to osquery over the provided socket path.
     /// The connection is attempted immediately without polling for the socket to exist.
     ///
     /// # Errors
     ///
     /// Returns an error if connecting to the socket at `path` fails.
-    pub fn new_with_path<P: AsRef<Path>>(path: P) -> TResult<Self> {
+    pub fn connect_with_path<P: AsRef<Path>>(path: P) -> TResult<Self> {
         let stream = TClient::connect(&path)
             .map_err(|e| format!("connecting to {}: {}", path.as_ref().display(), e))?;
         Self::from_stream(stream)
     }
 
-    /// create a new client communicating to osquery over the provided socket path,
+    /// Connect to osquery over the provided socket path,
     /// polling for the socket to exist up to `socket_open_timeout`.
     ///
     /// # Errors
     ///
     /// Returns an error if the socket does not appear within `socket_open_timeout`
     /// or if connecting to it fails.
-    pub fn new_with_timeout<P: AsRef<Path>>(
+    pub fn connect_with_timeout<P: AsRef<Path>>(
         path: P,
         socket_open_timeout: Duration,
     ) -> TResult<Self> {
@@ -178,8 +186,8 @@ impl ExtensionManagerClient {
         })
     }
 
-    /// creates a new client communicating to osquery over the provided transports.
-    #[must_use] 
+    /// Create a new client communicating to osquery over the provided transports.
+    #[must_use]
     pub fn new_with_proto(
         input_protocol: Box<dyn TInputProtocol + Send>,
         output_protocol: Box<dyn TOutputProtocol + Send>,
@@ -193,7 +201,7 @@ impl ExtensionManagerClient {
         }
     }
 
-    /// close closes the transport connection. After close is called,
+    /// Close the transport connection. After close is called,
     /// other methods may return errors.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     pub fn close(&mut self) {
@@ -202,11 +210,10 @@ impl ExtensionManagerClient {
             {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
-            drop(stream);
         }
     }
 
-    /// ping requests metadata from the extension manager.
+    /// Request metadata from the extension manager.
     ///
     /// # Errors
     ///
@@ -216,7 +223,7 @@ impl ExtensionManagerClient {
         self.client.ping()
     }
 
-    /// call requests a call to an extension (or core) registry plugin.
+    /// Call an extension (or core) registry plugin.
     ///
     /// # Errors
     ///
@@ -227,14 +234,15 @@ impl ExtensionManagerClient {
     )]
     pub fn call(
         &mut self,
-        registry: String,
-        item: String,
+        registry: &str,
+        item: &str,
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse> {
-        self.client.call(registry, item, request)
+        self.client
+            .call(registry.to_string(), item.to_string(), request)
     }
 
-    /// shutdown calls the thrift shutdown RPC on the remote end.
+    /// Call the Thrift shutdown RPC on the remote end.
     ///
     /// # Errors
     ///
@@ -244,7 +252,7 @@ impl ExtensionManagerClient {
         self.client.shutdown()
     }
 
-    /// extensions requests the list of active registered extensions.
+    /// Request the list of active registered extensions.
     ///
     /// # Errors
     ///
@@ -254,7 +262,7 @@ impl ExtensionManagerClient {
         self.client.extensions()
     }
 
-    /// options requests the list of bootstrap or configuration options.
+    /// Request the list of bootstrap or configuration options.
     ///
     /// # Errors
     ///
@@ -294,25 +302,25 @@ impl ExtensionManagerClient {
         self.client.deregister_extension(uuid)
     }
 
-    /// query requests a query to be run and returns the extension response.
+    /// Execute a query and return the extension response.
     /// Consider using the `query_row` or `query_rows` helpers for a more friendly interface.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
-    pub fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.client.query(sql)
+    pub fn query(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse> {
+        self.client.query(sql.to_string())
     }
 
-    /// `get_query_columns` requests the columns returned by the parsed query.
+    /// Request the columns returned by the parsed query.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying Thrift transport fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
-    pub fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
-        self.client.get_query_columns(sql)
+    pub fn get_query_columns(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse> {
+        self.client.get_query_columns(sql.to_string())
     }
 
     /// `query_rows` is a helper that executes the requested query and returns the `TResults`.
@@ -351,9 +359,18 @@ impl ExtensionManagerClient {
     pub fn query_row(&mut self, sql: &str) -> TResult<BTreeMap<String, String>> {
         let res = self.query_rows(sql)?;
         match res.len() {
-            1 => res.into_iter().next().ok_or_else(|| "expected 1 row but iterator was empty".into()),
+            1 => res
+                .into_iter()
+                .next()
+                .ok_or_else(|| "expected 1 row but iterator was empty".into()),
             _ => Err(format!("expected 1 row, got {}", res.len()).into()),
         }
+    }
+}
+
+impl Drop for ExtensionManagerClient {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -368,8 +385,8 @@ impl ExtensionManager for ExtensionManagerClient {
 
     fn call(
         &mut self,
-        registry: String,
-        item: String,
+        registry: &str,
+        item: &str,
         request: osquery::ExtensionPluginRequest,
     ) -> TResult<osquery::ExtensionResponse> {
         ExtensionManagerClient::call(self, registry, item, request)
@@ -402,11 +419,11 @@ impl ExtensionManager for ExtensionManagerClient {
         ExtensionManagerClient::deregister_extension(self, uuid)
     }
 
-    fn query(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
+    fn query(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse> {
         ExtensionManagerClient::query(self, sql)
     }
 
-    fn get_query_columns(&mut self, sql: String) -> TResult<osquery::ExtensionResponse> {
+    fn get_query_columns(&mut self, sql: &str) -> TResult<osquery::ExtensionResponse> {
         ExtensionManagerClient::get_query_columns(self, sql)
     }
 }
@@ -425,7 +442,7 @@ mod tests {
     #[ignore = "requires a running osqueryd extension socket"]
     #[serial]
     fn query_rows() {
-        let mut client = ExtensionManagerClient::new_with_path(TEST_SOCKET).unwrap();
+        let mut client = ExtensionManagerClient::connect_with_path(TEST_SOCKET).unwrap();
         client.query_rows("SELECT * FROM users").unwrap();
     }
 
@@ -433,7 +450,7 @@ mod tests {
     #[ignore = "requires a running osqueryd extension socket"]
     #[serial]
     fn query_row() {
-        let mut client = ExtensionManagerClient::new_with_path(TEST_SOCKET).unwrap();
+        let mut client = ExtensionManagerClient::connect_with_path(TEST_SOCKET).unwrap();
         client.query_row("SELECT * FROM users limit 1").unwrap();
     }
 
@@ -464,7 +481,7 @@ mod tests {
     #[serial]
     fn new_with_timeout_connects() {
         let client =
-            ExtensionManagerClient::new_with_timeout(TEST_SOCKET, Duration::from_secs(5));
+            ExtensionManagerClient::connect_with_timeout(TEST_SOCKET, Duration::from_secs(5));
         assert!(client.is_ok(), "should connect to running osqueryd");
     }
 
@@ -472,7 +489,7 @@ mod tests {
     #[ignore = "requires a running osqueryd extension socket"]
     #[serial]
     fn close_then_ping_errors() {
-        let mut client = ExtensionManagerClient::new_with_path(TEST_SOCKET).unwrap();
+        let mut client = ExtensionManagerClient::connect_with_path(TEST_SOCKET).unwrap();
         client.ping().unwrap(); // should succeed
         client.close();
         // After close, ping should fail (transport is closed)

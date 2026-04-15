@@ -1,14 +1,14 @@
 use crate::osquery;
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 mod manager;
 mod threaded;
-pub use manager::*;
+pub use manager::{ExtensionManagerServer, ExtensionManagerServerBuilder};
 
 /// `RegistryNames` contains the allowable `registry_name` values. If a plugin
 /// attempts to register with another value, the program will panic.
 #[non_exhaustive]
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RegistryName {
     Table,
     Logger,
@@ -18,7 +18,7 @@ pub enum RegistryName {
 
 impl fmt::Display for RegistryName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self {
+        match self {
             RegistryName::Table => write!(f, "table"),
             RegistryName::Logger => write!(f, "logger"),
             RegistryName::Config => write!(f, "config"),
@@ -27,32 +27,46 @@ impl fmt::Display for RegistryName {
     }
 }
 
+impl std::str::FromStr for RegistryName {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "table" => Ok(RegistryName::Table),
+            "logger" => Ok(RegistryName::Logger),
+            "config" => Ok(RegistryName::Config),
+            "distributed" => Ok(RegistryName::Distributed),
+            other => Err(format!("Unknown registry: {other}")),
+        }
+    }
+}
+
 /// `OsqueryPlugin` represents an osquery plugin.
 pub trait OsqueryPlugin: Send + Sync {
-    /// Name used to refer to the plugin (eg. the name of the
+    /// Return the name used to refer to the plugin (e.g. the name of the
     /// table the plugin implements).
-    fn name(&self) -> Arc<str>;
+    fn name(&self) -> &str;
 
-    /// Which "registry" the plugin should be added to.
-    fn registry_name(&self) -> &RegistryName;
+    /// Return the registry this plugin belongs to.
+    fn registry_name(&self) -> RegistryName;
 
-    /// Returns the detailed information about the interface exposed
+    /// Return the detailed information about the interface exposed
     /// by the plugin. See the example plugins for samples.
-    fn routes(&mut self) -> osquery::ExtensionPluginResponse {
+    fn routes(&self) -> osquery::ExtensionPluginResponse {
         osquery::ExtensionPluginResponse::new()
     }
 
-    /// Implements a health check for the plugin. If the plugin is in a
+    /// Perform a health check for the plugin. If the plugin is in a
     /// healthy state, `StatusOK` should be returned.
-    fn ping(&mut self) -> osquery::ExtensionStatus {
+    fn ping(&self) -> osquery::ExtensionStatus {
         osquery::ExtensionStatus::new(0, "OK".to_string(), None)
     }
 
-    /// Requests the plugin to perform its defined behavior, returning
+    /// Perform the plugin's defined behavior, returning
     /// a response containing the result.
     fn call(&mut self, req: osquery::ExtensionPluginRequest) -> osquery::ExtensionResponse;
 
-    /// Alerts the plugin to stop.
+    /// Alert the plugin to stop.
     fn shutdown(&self) {}
 }
 

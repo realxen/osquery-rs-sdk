@@ -1,13 +1,13 @@
 //! Create an osquery logging plugin.
 //!
-//! See http&s://osquery.rea&dthedocs.io/en/latest/development/logger-plugins/ for more.
+//! See <https://osquery.readthedocs.io/en/latest/development/logger-plugins/> for more.
 use crate::{osquery, OsqueryPlugin, RegistryName, Result};
 use serde_json::Value;
-use std::{fmt, str::FromStr, sync::Arc};
+use std::{fmt, str::FromStr};
 
 // encodes the type of log osquery is outputting.
 #[non_exhaustive]
-#[derive(PartialEq, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LogType {
     Health,
     Init,
@@ -20,7 +20,7 @@ pub enum LogType {
 
 impl fmt::Display for LogType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self {
+        match self {
             LogType::Health => write!(f, "health"),
             LogType::Init => write!(f, "init"),
             LogType::Snapshot => write!(f, "snapshot"),
@@ -33,7 +33,7 @@ impl fmt::Display for LogType {
 }
 
 impl std::str::FromStr for LogType {
-    type Err = LogType;
+    type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
@@ -43,7 +43,7 @@ impl std::str::FromStr for LogType {
             "status" => Ok(LogType::Status),
             "log" => Ok(LogType::Log),
             "string" => Ok(LogType::String),
-            _ => Ok(LogType::Unknown),
+            other => Err(format!("unknown log type: {other}")),
         }
     }
 }
@@ -53,32 +53,30 @@ impl std::str::FromStr for LogType {
 // argument can be optionally used to log differently depending on the
 // type of log received.
 pub struct LoggerPlugin<LogFunc: FnMut(LogType, &str) -> Result<()>> {
-    name: Arc<str>,
-    registry: RegistryName,
+    name: String,
     log_fn: LogFunc,
 }
 
 impl<LogFunc: FnMut(LogType, &str) -> Result<()>> LoggerPlugin<LogFunc> {
-    /// creates a `ConfigPlugin` plugin.
+    /// Create a `LoggerPlugin` plugin.
     /// * [`LogFunc`]: should log the provided result string.
-    pub fn new(name: &str, log_fn: LogFunc) -> Box<Self> {
-        Box::new(Self {
-            name: Arc::from(name),
-            registry: RegistryName::Logger,
+    pub fn new(name: &str, log_fn: LogFunc) -> Self {
+        Self {
+            name: name.to_string(),
             log_fn,
-        })
+        }
     }
 }
 
 impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
     for LoggerPlugin<LogFunc>
 {
-    fn name(&self) -> std::sync::Arc<str> {
-        Arc::clone(&self.name)
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn registry_name(&self) -> &RegistryName {
-        &self.registry
+    fn registry_name(&self) -> RegistryName {
+        RegistryName::Logger
     }
 
     #[cfg_attr(
@@ -103,7 +101,6 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
                         match serde_json::from_str::<Value>(&status_json) {
                             Err(err) => errors.push(format!("error parsing status logs: {err}")),
                             Ok(Value::Array(arr)) => {
-                                let mut errors = Vec::new();
                                 for s in &arr {
                                     if let Err(err) = (self.log_fn)(LogType::Status, &s.to_string())
                                     {
@@ -116,7 +113,7 @@ impl<LogFunc: FnMut(LogType, &str) -> Result<()> + Send + Sync> OsqueryPlugin
                     }
                     None => errors.push(String::from("got empty status")),
                 },
-                Ok(LogType::Log | LogType::Unknown) => {}
+                Ok(LogType::Log) => {}
                 Ok(ltype) => {
                     if let Err(err) = (self.log_fn)(ltype, log) {
                         errors.push(format!("{err} for type: {typ}"));
@@ -177,8 +174,8 @@ mod tests {
             Ok(())
         });
 
-        assert_eq!(&*plugin.name(), "mock");
-        assert_eq!(*plugin.registry_name(), RegistryName::Logger);
+        assert_eq!(plugin.name(), "mock");
+        assert_eq!(plugin.registry_name(), RegistryName::Logger);
 
         let res = plugin.call(osquery::ExtensionPluginRequest::from([
             ("snapshot".to_string(), "logged snapshot".to_string()),
@@ -216,10 +213,9 @@ mod tests {
                 .unwrap()
         );
 
-        // TODO: This test case should fail,
-        // but if we fail osqueryd will crash for now uknown logs do nothing and return ok.
+        // Unknown log types should now return error status
         assert_eq!(
-            0,
+            1,
             plugin
                 .call(osquery::ExtensionPluginRequest::from([(
                     "custom".to_string(),
@@ -260,19 +256,29 @@ mod tests {
             res.message.unwrap()
         );
 
-        // call with mutiple errors
+        // call with multiple errors
         let res = plugin
             .call(osquery::ExtensionPluginRequest::from([
                 ("string".to_string(), "logged true".to_string()),
                 ("init".to_string(), "logged true".to_string()),
-                // ("test".to_string(), "logged true".to_string()), TODO: Unknown should fail
+                ("unknown_type".to_string(), "logged true".to_string()),
             ]))
             .status
             .unwrap();
 
-        assert_eq!(
-            "error log_fn_foobar for type: init, log_fn_foobar for type: string".to_string(),
-            res.message.unwrap()
+        // BTreeMap iterates in sorted order: init, string, unknown_type
+        let msg = res.message.unwrap();
+        assert!(
+            msg.contains("log_fn_foobar for type: init"),
+            "should contain init error: {msg}"
+        );
+        assert!(
+            msg.contains("log_fn_foobar for type: string"),
+            "should contain string error: {msg}"
+        );
+        assert!(
+            msg.contains("cannot log request type: unknown_type"),
+            "should contain unknown_type error: {msg}"
         );
     }
 }

@@ -11,11 +11,11 @@ const OSQUERY_SOCKET: &str = r"\\.\pipe\osquery.em";
 
 fn example_extension() -> Result<()> {
     let mut server = ExtensionManagerServer::new("example_table_ext", OSQUERY_SOCKET).unwrap();
-    server.register_plugin(TablePlugin::new(
+    server.register_plugin(Box::new(TablePlugin::new(
         "example_table",
         example_columns(),
         example_generate,
-    ))?;
+    )))?;
     server.run()
 }
 
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     std::thread::sleep(Duration::from_secs(2));
 
     // create a simple client interface
-    let mut client = ExtensionManagerClient::new_with_path(OSQUERY_SOCKET)?;
+    let mut client = ExtensionManagerClient::connect_with_path(OSQUERY_SOCKET)?;
     println!("##### Enter SQL query for osqueryd ####");
     println!(
         "##### Note: This is a simple interface for osqueryd please use osqueryi instead ####"
@@ -38,10 +38,7 @@ fn main() -> Result<()> {
         }
         if let Some('\n') | Some('\r') = query.chars().next_back() {
             if query.len() > 1 {
-                println!(
-                    "{:?}",
-                    client.query(query.clone())?.response.unwrap_or_default()
-                );
+                println!("{:?}", client.query(&query)?.response.unwrap_or_default());
             }
             query.clear();
         }
@@ -52,10 +49,10 @@ fn main() -> Result<()> {
 
 fn example_columns() -> Vec<ColumnDefinition> {
     vec![
-        ColumnDefinition::text("hello", &[]),
-        ColumnDefinition::integer("integer", &[]),
-        ColumnDefinition::big_int("big_int", &[]),
-        ColumnDefinition::double("double", &[]),
+        ColumnDefinition::text("hello"),
+        ColumnDefinition::integer("integer"),
+        ColumnDefinition::big_int("big_int"),
+        ColumnDefinition::double("double"),
     ]
 }
 

@@ -1,4 +1,4 @@
 mod manager;
 mod named_pipe;
 
-pub use manager::*;
+pub use manager::{ExtensionManager, ExtensionManagerClient};

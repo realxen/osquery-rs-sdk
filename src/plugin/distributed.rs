@@ -1,13 +1,10 @@
 //! Create an osquery distributed plugin.
 //!
-//! See <https://osquery.readthedocs.io/en/latest/development/config-plugins>/ for more.
+//! See <https://osquery.readthedocs.io/en/latest/development/distributed-plugins/> for more.
 use crate::{osquery, OsqueryPlugin, RegistryName, Result};
-use serde::{
-    de::{self, IntoDeserializer},
-    Deserialize, Deserializer, Serialize,
-};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, result, sync::Arc};
+use std::{collections::BTreeMap, result};
 
 /// Contains the information about which queries the
 /// distributed system should run.
@@ -32,13 +29,46 @@ pub struct QueriesRequest {
 }
 
 impl QueriesRequest {
-    #[must_use] 
+    /// Create a new queries request with the given queries map.
+    #[must_use]
     pub fn new(queries: BTreeMap<String, String>) -> Self {
         Self {
             queries,
             discovery: BTreeMap::new(),
             accelerate_seconds: 5,
         }
+    }
+
+    /// Return the queries map.
+    #[must_use]
+    pub fn queries(&self) -> &BTreeMap<String, String> {
+        &self.queries
+    }
+
+    /// Return the discovery queries map.
+    #[must_use]
+    pub fn discovery(&self) -> &BTreeMap<String, String> {
+        &self.discovery
+    }
+
+    /// Return the accelerate seconds value.
+    #[must_use]
+    pub fn accelerate_seconds(&self) -> i64 {
+        self.accelerate_seconds
+    }
+
+    /// Set the discovery queries.
+    #[must_use]
+    pub fn with_discovery(mut self, discovery: BTreeMap<String, String>) -> Self {
+        self.discovery = discovery;
+        self
+    }
+
+    /// Set the accelerate seconds value.
+    #[must_use]
+    pub fn with_accelerate_seconds(mut self, seconds: i64) -> Self {
+        self.accelerate_seconds = seconds;
+        self
     }
 }
 
@@ -83,14 +113,6 @@ where
 // Handles deserializing integers in noncanonical osquery JSON.
 #[derive(Debug)]
 struct OsqueryInt(i64);
-
-impl std::ops::Deref for OsqueryInt {
-    type Target = i64;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 impl From<i64> for OsqueryInt {
     fn from(inner: i64) -> Self {
@@ -162,16 +184,12 @@ impl TryFrom<QueriesResponse> for Vec<QueryResponse> {
 
         for (query_name, status) in statuses {
             let rows = match queries.get(&query_name) {
-                Some(Value::Array(rows)) => {
-                    serde::Deserialize::deserialize(rows.clone().into_deserializer())
-                        .map_err(|err| format!("{query_name}: {err}"))?
-                }
+                Some(Value::Array(rows)) => serde_json::from_value(Value::Array(rows.clone()))
+                    .map_err(|err| format!("{query_name}: {err}"))?,
                 // Empty string results or missing query results are treated as empty rows
                 Some(Value::String(_)) | None => vec![],
                 Some(other) => {
-                    return Err(format!(
-                        "results for \"{query_name}\" unknown type {other}"
-                    ))
+                    return Err(format!("results for \"{query_name}\" unknown type {other}"))
                 }
             };
 
@@ -197,8 +215,7 @@ where
     GetFunc: FnMut() -> Result<QueriesRequest>,
     WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()>,
 {
-    name: Arc<str>,
-    registry: RegistryName,
+    name: String,
     get_queries: GetFunc,
     write_queries: WriteFunc,
 }
@@ -208,13 +225,12 @@ where
     GetFunc: FnMut() -> Result<QueriesRequest>,
     WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()>,
 {
-    pub fn new(name: &str, get_queries: GetFunc, write_queries: WriteFunc) -> Box<Self> {
-        Box::new(Self {
-            name: Arc::from(name),
-            registry: RegistryName::Distributed,
+    pub fn new(name: &str, get_queries: GetFunc, write_queries: WriteFunc) -> Self {
+        Self {
+            name: name.to_string(),
             get_queries,
             write_queries,
-        })
+        }
     }
 }
 
@@ -223,12 +239,12 @@ where
     GetFunc: FnMut() -> Result<QueriesRequest> + Send + Sync,
     WriteFunc: FnMut(Vec<QueryResponse>) -> Result<()> + Send + Sync,
 {
-    fn name(&self) -> std::sync::Arc<str> {
-        Arc::clone(&self.name)
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn registry_name(&self) -> &RegistryName {
-        &self.registry
+    fn registry_name(&self) -> RegistryName {
+        RegistryName::Distributed
     }
 
     #[cfg_attr(
@@ -244,9 +260,9 @@ where
                         Ok(query_json) => Ok(osquery::ExtensionPluginResponse::from([
                             BTreeMap::from([("results".to_string(), query_json)]),
                         ])),
-                        Err(err) => Err(format!("error deserializing queries: {err}").into()),
+                        Err(err) => Err(format!("error serializing queries: {err}").into()),
                     },
-                    Err(err) => Err(format!("error serializing queries: {err}").into()),
+                    Err(err) => Err(format!("error getting queries: {err}").into()),
                 }
             }
             // Call write_queries
@@ -262,12 +278,12 @@ where
                             Err(err) => Err(format!("error writing results: {err}").into()),
                         }
                     }
-                    Err(err) => Err(format!("error unmarshalling results: {err}").into()),
+                    Err(err) => Err(format!("error deserializing results: {err}").into()),
                 },
-                None => Err(String::from("error results is nil").into()),
+                None => Err(String::from("error: missing results").into()),
             },
             Some(action) => Err(format!("unknown action: {action}").into()),
-            None => Err(String::from("action is nil").into()),
+            None => Err(String::from("missing action").into()),
         };
 
         match result {
@@ -276,7 +292,7 @@ where
                 resp,
             ),
             Err(err) => {
-                let status = osquery::ExtensionStatus::new(1, err, None);
+                let status = osquery::ExtensionStatus::new(1, err.to_string(), None);
                 osquery::ExtensionResponse::new(status, None)
             }
         }
@@ -333,8 +349,8 @@ mod tests {
             },
         );
 
-        assert_eq!(&*plugin.name(), "mock");
-        assert_eq!(*plugin.registry_name(), RegistryName::Distributed);
+        assert_eq!(plugin.name(), "mock");
+        assert_eq!(plugin.registry_name(), RegistryName::Distributed);
 
         // Call getQueries
         let resp = plugin.call(osquery::ExtensionPluginRequest::from([(
@@ -371,17 +387,15 @@ mod tests {
         let mut plugin = DistributedPlugin::new(
             "mock",
             move || {
-                Ok(QueriesRequest {
-                    queries: BTreeMap::from([(
-                        "query1".to_string(),
-                        "select * from time".to_string(),
-                    )]),
-                    discovery: BTreeMap::from([(
-                        "query1".to_string(),
-                        r#"select version from osquery_info where version = "2.4.0""#.to_string(),
-                    )]),
-                    accelerate_seconds: 30,
-                })
+                Ok(QueriesRequest::new(BTreeMap::from([(
+                    "query1".to_string(),
+                    "select * from time".to_string(),
+                )]))
+                .with_discovery(BTreeMap::from([(
+                    "query1".to_string(),
+                    r#"select version from osquery_info where version = "2.4.0""#.to_string(),
+                )]))
+                .with_accelerate_seconds(30))
             },
             move |_| Ok(()),
         );
@@ -435,7 +449,7 @@ mod tests {
         assert_eq!(resp.status.clone().unwrap().code.unwrap_or(0), 1);
         assert_eq!(
             resp.status.unwrap().message.unwrap(),
-            "error serializing queries: getQueries failed".to_string()
+            "error getting queries: getQueries failed".to_string()
         );
         // Call with good action but bad results
         let resp = plugin.call(osquery::ExtensionPluginRequest::from([
@@ -450,7 +464,7 @@ mod tests {
         assert_eq!(resp.status.clone().unwrap().code.unwrap_or(0), 1);
         assert_eq!(
             resp.status.unwrap().message.unwrap(),
-            "error unmarshalling results: invalid digit found in string at line 1 column 30"
+            "error deserializing results: invalid digit found in string at line 1 column 30"
                 .to_string()
         );
         // Call with good action but bad status type
@@ -466,7 +480,7 @@ mod tests {
         assert_eq!(resp.status.clone().unwrap().code.unwrap_or(0), 1);
         assert_eq!(
             resp.status.unwrap().message.unwrap(),
-            "error unmarshalling results: invalid value [], expected int at line 1 column 27"
+            "error deserializing results: invalid value [], expected int at line 1 column 27"
                 .to_string()
         );
         // Call with good action but missing queries field
@@ -479,7 +493,7 @@ mod tests {
         assert_eq!(resp.status.clone().unwrap().code.unwrap_or(0), 1);
         assert_eq!(
             resp.status.unwrap().message.unwrap(),
-            "error unmarshalling results: missing field `queries` at line 1 column 16".to_string()
+            "error deserializing results: missing field `queries` at line 1 column 16".to_string()
         )
     }
 
