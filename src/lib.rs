@@ -57,7 +57,7 @@ pub use crate::plugin::{
     ColumnDefinition, ColumnType, ColumnValues, ConfigPlugin, Constraint, ConstraintList,
     DeleteRequest, DistributedPlugin, InsertRequest, InvalidOperator, LogType, LoggerPlugin,
     MutationResult, Operator, QueriesRequest, QueryContext, QueryResponse, Stats, Table,
-    TablePlugin, UpdateRequest,
+    TablePlugin, UpdateRequest, WritableTable, WritableTablePlugin,
 };
 
 /// Result type used throughout the plugin APIs.

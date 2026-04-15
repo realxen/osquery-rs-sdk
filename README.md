@@ -72,38 +72,40 @@ fn generate(_ctx: QueryContext) -> Result<Table> {
 
 ### Create a writable table
 
-Tables support INSERT, UPDATE, and DELETE via mutation callbacks:
+Tables with INSERT, UPDATE, and DELETE support implement the `WritableTable` trait:
 
 ```rust
 use osquery_rs_sdk::{
-    ColumnDefinition, ExtensionManagerServer, InsertRequest, MutationResult,
-    QueryContext, Result, Table, TablePlugin, UpdateRequest, DeleteRequest,
+    ColumnDefinition, DeleteRequest, ExtensionManagerServer, InsertRequest,
+    MutationResult, QueryContext, Result, Table, UpdateRequest,
+    WritableTable, WritableTablePlugin,
 };
-use std::collections::BTreeMap;
+
+struct MyTable;
+
+impl WritableTable for MyTable {
+    fn name(&self) -> &str { "my_table" }
+    fn columns(&self) -> Vec<ColumnDefinition> { vec![] }
+    fn generate(&mut self, _ctx: QueryContext) -> Result<Table> { Ok(vec![]) }
+    fn insert(&mut self, req: InsertRequest) -> Result<MutationResult> {
+        Ok(MutationResult::Success { row_id: req.row_id })
+    }
+    fn update(&mut self, _req: UpdateRequest) -> Result<MutationResult> {
+        Ok(MutationResult::Success { row_id: None })
+    }
+    fn delete(&mut self, _req: DeleteRequest) -> Result<MutationResult> {
+        Ok(MutationResult::Success { row_id: None })
+    }
+}
 
 fn main() -> Result<()> {
     let mut server = ExtensionManagerServer::new("my_ext", "/var/osquery/osquery.em")?;
-    server.register_plugin(
-        TablePlugin::writable("kv_store", columns(), generate,
-            |req: InsertRequest| Ok(MutationResult::Success { row_id: req.row_id }),
-            |_req: UpdateRequest| Ok(MutationResult::Success { row_id: None }),
-            |_req: DeleteRequest| Ok(MutationResult::Success { row_id: None }),
-        ),
-    )?;
+    server.register_plugin(WritableTablePlugin::new(MyTable))?;
     server.run()
 }
-# fn columns() -> Vec<ColumnDefinition> { vec![] }
-# fn generate(_: QueryContext) -> Result<Table> { Ok(vec![]) }
 ```
 
-Individual mutations can be added with builder methods:
-
-```rust
-# use osquery_rs_sdk::{TablePlugin, ColumnDefinition, MutationResult};
-let plugin = TablePlugin::new("my_table", vec![], |_| Ok(vec![]))
-    .with_insert(|req| Ok(MutationResult::Success { row_id: None }))
-    .with_delete(|req| Ok(MutationResult::Success { row_id: None }));
-```
+The trait gives each method direct `&mut self` access to your struct's state -- no `Arc<Mutex<>>` needed.
 
 ### Create a logger plugin
 

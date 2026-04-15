@@ -18,7 +18,8 @@
 use osquery_rs_sdk::{
     ColumnDefinition, ConfigPlugin, DeleteRequest, DistributedPlugin, ExtensionManagerClient,
     ExtensionManagerServer, InsertRequest, LogType, LoggerPlugin, MutationResult, QueriesRequest,
-    QueryResponse, Result, Table, TablePlugin, UpdateRequest,
+    QueryContext, QueryResponse, Result, Table, TablePlugin, UpdateRequest, WritableTable,
+    WritableTablePlugin,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -163,76 +164,88 @@ fn table_plugin_e2e() {
 // 2b. Writable TablePlugin: INSERT, SELECT, UPDATE, DELETE via osqueryd
 // ---------------------------------------------------------------------------
 
+struct E2eWritableTable {
+    data: BTreeMap<i64, (String, String)>,
+}
+
+impl E2eWritableTable {
+    fn new() -> Self {
+        Self {
+            data: BTreeMap::new(),
+        }
+    }
+}
+
+impl WritableTable for E2eWritableTable {
+    fn name(&self) -> &str {
+        "e2e_writable"
+    }
+
+    fn columns(&self) -> Vec<ColumnDefinition> {
+        vec![
+            ColumnDefinition::text("key").index(),
+            ColumnDefinition::text("value"),
+        ]
+    }
+
+    fn generate(&mut self, _ctx: QueryContext) -> Result<Table> {
+        Ok(self
+            .data
+            .values()
+            .map(|(k, v)| {
+                BTreeMap::from([
+                    ("key".to_string(), k.clone()),
+                    ("value".to_string(), v.clone()),
+                ])
+            })
+            .collect())
+    }
+
+    fn insert(&mut self, req: InsertRequest) -> Result<MutationResult> {
+        let key = req
+            .values
+            .first()
+            .and_then(|v| v.clone())
+            .unwrap_or_default();
+        let value = req
+            .values
+            .get(1)
+            .and_then(|v| v.clone())
+            .unwrap_or_default();
+        let row_id = req.row_id.unwrap_or(0);
+        self.data.insert(row_id, (key, value));
+        Ok(MutationResult::Success {
+            row_id: Some(row_id),
+        })
+    }
+
+    fn update(&mut self, req: UpdateRequest) -> Result<MutationResult> {
+        let key = req
+            .values
+            .first()
+            .and_then(|v| v.clone())
+            .unwrap_or_default();
+        let value = req
+            .values
+            .get(1)
+            .and_then(|v| v.clone())
+            .unwrap_or_default();
+        let id = req.new_row_id.unwrap_or(req.row_id);
+        self.data.remove(&req.row_id);
+        self.data.insert(id, (key, value));
+        Ok(MutationResult::Success { row_id: None })
+    }
+
+    fn delete(&mut self, req: DeleteRequest) -> Result<MutationResult> {
+        self.data.remove(&req.row_id);
+        Ok(MutationResult::Success { row_id: None })
+    }
+}
+
 #[test]
 #[ignore = "requires a running osqueryd extension socket"]
 fn writable_table_plugin_e2e() {
-    let store: Arc<Mutex<BTreeMap<i64, (String, String)>>> = Arc::new(Mutex::new(BTreeMap::new()));
-
-    let gen_store = store.clone();
-    let ins_store = store.clone();
-    let upd_store = store.clone();
-    let del_store = store.clone();
-
-    let columns = vec![
-        ColumnDefinition::text("key").index(),
-        ColumnDefinition::text("value"),
-    ];
-
-    let plugin = TablePlugin::writable(
-        "e2e_writable",
-        columns,
-        move |_ctx: osquery_rs_sdk::QueryContext| -> Result<Table> {
-            let data = gen_store.lock().unwrap();
-            Ok(data
-                .values()
-                .map(|(k, v)| {
-                    BTreeMap::from([
-                        ("key".to_string(), k.clone()),
-                        ("value".to_string(), v.clone()),
-                    ])
-                })
-                .collect())
-        },
-        move |req: InsertRequest| -> Result<MutationResult> {
-            // values are in column-definition order: [key, value]
-            let key = req
-                .values
-                .first()
-                .and_then(|v| v.clone())
-                .unwrap_or_default();
-            let value = req
-                .values
-                .get(1)
-                .and_then(|v| v.clone())
-                .unwrap_or_default();
-            let row_id = req.row_id.unwrap_or(0);
-            ins_store.lock().unwrap().insert(row_id, (key, value));
-            Ok(MutationResult::Success {
-                row_id: Some(row_id),
-            })
-        },
-        move |req: UpdateRequest| -> Result<MutationResult> {
-            let key = req
-                .values
-                .first()
-                .and_then(|v| v.clone())
-                .unwrap_or_default();
-            let value = req
-                .values
-                .get(1)
-                .and_then(|v| v.clone())
-                .unwrap_or_default();
-            let id = req.new_row_id.unwrap_or(req.row_id);
-            let mut data = upd_store.lock().unwrap();
-            data.remove(&req.row_id);
-            data.insert(id, (key, value));
-            Ok(MutationResult::Success { row_id: None })
-        },
-        move |req: DeleteRequest| -> Result<MutationResult> {
-            del_store.lock().unwrap().remove(&req.row_id);
-            Ok(MutationResult::Success { row_id: None })
-        },
-    );
+    let plugin = WritableTablePlugin::new(E2eWritableTable::new());
 
     let handle = std::thread::spawn(move || {
         let mut server = ExtensionManagerServer::new("e2e_writable_ext", OSQUERY_SOCKET)

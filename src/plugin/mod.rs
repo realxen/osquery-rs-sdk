@@ -11,5 +11,5 @@ pub use logger::{LogType, LoggerPlugin};
 pub use table::{
     ColumnDefinition, ColumnType, ColumnValues, Constraint, ConstraintList, DeleteRequest,
     InsertRequest, InvalidOperator, MutationResult, Operator, QueryContext, Table, TablePlugin,
-    UpdateRequest,
+    UpdateRequest, WritableTable, WritableTablePlugin,
 };
