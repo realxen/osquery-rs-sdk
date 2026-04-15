@@ -183,10 +183,7 @@ mod tests {
         let err: Error = "testing".into();
         assert_eq!(err.to_string(), "testing");
         let err: Error = thrift::Error::from("thrift err msg").into();
-        assert_eq!(
-            err.to_string(),
-            "thrift err msg: ApplicationKind(Unknown)"
-        );
+        assert_eq!(err.to_string(), "thrift err msg: ApplicationKind(Unknown)");
         let err: Error = thrift::Error::Transport(thrift::TransportError::new(
             thrift::TransportErrorKind::AlreadyOpen,
             "hello transport",
@@ -229,5 +226,4 @@ mod tests {
                 .contains("inner error"),
         );
     }
-
 }

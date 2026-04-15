@@ -1,7 +1,7 @@
 //!  Create an osquery table plugin.
 
-use crate::{osquery, OsqueryPlugin, RegistryName, Result};
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use crate::{OsqueryPlugin, RegistryName, Result, osquery};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt, result};
 
@@ -201,7 +201,7 @@ impl<'de> Deserialize<'de> for QueryContext {
                         other => {
                             return Err(de::Error::custom(format!(
                                 "name: invalid value {other}, expected string"
-                            )))
+                            )));
                         }
                     }
                 }

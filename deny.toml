@@ -13,20 +13,17 @@ targets = [
 
 # --- Advisory checks (RustSec) -------------------------------------------
 [advisories]
-# Fail CI on any known vulnerability
-vulnerability = "deny"
-# Warn on unmaintained crates (don't block CI for this)
-unmaintained = "warn"
-# Warn on advisories that have been yanked
+# Vulnerabilities, unsound, and notice advisories are always errors (cargo-deny v2 default).
+# Flag unmaintained advisories only for direct workspace dependencies.
+unmaintained = "workspace"
+# Warn on yanked crate versions
 yanked = "warn"
-# Warn on advisories with no fix available yet
-notice = "warn"
 
 # --- License policy -------------------------------------------------------
 [licenses]
 # Confidence threshold for license detection
 confidence-threshold = 0.8
-# Allow only these permissive licenses
+# Allow only these permissive licenses (all others are denied by default)
 allow = [
     "MIT",
     "Apache-2.0",
@@ -36,8 +33,6 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
 ]
-# Treat unlicensed crates as errors
-unlicensed = "deny"
 
 # Some crates have non-standard license files; clarify them here
 [[licenses.clarify]]

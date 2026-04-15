@@ -1,7 +1,7 @@
 //! Create an osquery configuration plugin.
 //!
 //! See <https://osquery.readthedocs.io/en/latest/development/config-plugins>/ for more.
-use crate::{osquery, OsqueryPlugin, RegistryName, Result};
+use crate::{OsqueryPlugin, RegistryName, Result, osquery};
 use std::collections::BTreeMap;
 
 /// A map that should use the source name as key, and the config JSON as values.

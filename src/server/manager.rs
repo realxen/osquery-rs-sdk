@@ -1,8 +1,8 @@
 use super::{
-    threaded::{ExtensionServer, StopHandle},
     OsqueryPlugin, RegistryName,
+    threaded::{ExtensionServer, StopHandle},
 };
-use crate::{client, osquery, Error, Result};
+use crate::{Error, Result, client, osquery};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::{
@@ -429,34 +429,36 @@ impl ExtensionManagerServer {
         self.start(tx.clone())?;
 
         // Watch for the osquery process going away. If so, initiate shutdown.
-        std::thread::spawn(move || loop {
-            std::thread::sleep(ping_interval);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(ping_interval);
 
-            if let Ok(mut guard) = osquery_client.lock() {
-                match guard.as_mut() {
-                    // Client was set to None by shutdown -- exit the ping loop
-                    None => break,
-                    Some(client) => match client.ping() {
-                        Err(e) => {
-                            let msg = Error::from(e).context("extension ping failed");
-                            tx.send(Some(msg)).ok();
-                            break;
-                        }
-                        Ok(status) if status.code.unwrap_or_default() != 0 => {
-                            tx.send(Some(Error::from(format!(
-                                "ping returned status {}",
-                                status.code.unwrap_or_default()
-                            ))))
-                            .ok();
-                            break;
-                        }
-                        Ok(_) => {}
-                    },
+                if let Ok(mut guard) = osquery_client.lock() {
+                    match guard.as_mut() {
+                        // Client was set to None by shutdown -- exit the ping loop
+                        None => break,
+                        Some(client) => match client.ping() {
+                            Err(e) => {
+                                let msg = Error::from(e).context("extension ping failed");
+                                tx.send(Some(msg)).ok();
+                                break;
+                            }
+                            Ok(status) if status.code.unwrap_or_default() != 0 => {
+                                tx.send(Some(Error::from(format!(
+                                    "ping returned status {}",
+                                    status.code.unwrap_or_default()
+                                ))))
+                                .ok();
+                                break;
+                            }
+                            Ok(_) => {}
+                        },
+                    }
+                } else {
+                    tx.send(Some(Error::from("could not lock osquery client for ping")))
+                        .ok();
+                    break;
                 }
-            } else {
-                tx.send(Some(Error::from("could not lock osquery client for ping")))
-                    .ok();
-                break;
             }
         });
 
@@ -508,7 +510,7 @@ impl osquery::ExtensionSyncHandler for ExtensionServerHandler {
                     return Ok(osquery::ExtensionResponse::new(
                         osquery::ExtensionStatus::new(1, msg, None),
                         None,
-                    ))
+                    ));
                 }
             };
             let reg = self.registry.lock().map_err(|_| "registry lock poisoned")?;
@@ -551,8 +553,8 @@ mod tests {
     use super::*;
     use crate::osquery::ExtensionSyncHandler;
     use crate::plugin::table::{ColumnDefinition, TablePlugin};
-    use crate::server::mock;
     use crate::server::RegistryName;
+    use crate::server::mock;
     use serial_test::serial;
 
     #[cfg(unix)]

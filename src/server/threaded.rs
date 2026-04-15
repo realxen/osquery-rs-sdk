@@ -4,9 +4,9 @@
 
 use std::{io, path::Path, sync::Arc};
 use thrift::{
+    Error as TError, TransportErrorKind as TErrorKind,
     protocol::{TBinaryInputProtocol, TBinaryOutputProtocol},
     server::TProcessor,
-    Error as TError, TransportErrorKind as TErrorKind,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -14,10 +14,10 @@ use tokio::{
     sync::watch,
 };
 
-#[cfg(windows)]
-use tokio::net::windows::named_pipe::ServerOptions;
 #[cfg(unix)]
 use tokio::net::UnixListener;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ServerOptions;
 
 /// A handle that can be used to stop a running [`ExtensionServer`].
 ///
@@ -140,10 +140,7 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
     ///
     /// # Panics
     /// This function panics if thread-local runtime is not set.
-    fn handle_connection<RW: AsyncRead + AsyncWrite + Send + 'static>(
-        &self,
-        stream: RW,
-    ) {
+    fn handle_connection<RW: AsyncRead + AsyncWrite + Send + 'static>(&self, stream: RW) {
         let processor = self.processor.clone();
         self.runtime.spawn(async move {
             let (mut reader, mut writer) = tokio::io::split(stream);
@@ -167,7 +164,9 @@ impl<PRC: TProcessor + Send + Sync + 'static> ExtensionServer<PRC> {
                                     #[allow(unused_variables)]
                                     other => {
                                         #[cfg(feature = "tracing")]
-                                        tracing::error!("processor completed with error: {other:?}");
+                                        tracing::error!(
+                                            "processor completed with error: {other:?}"
+                                        );
                                     }
                                 }
                                 break;

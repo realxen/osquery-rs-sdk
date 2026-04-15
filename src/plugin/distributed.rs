@@ -1,8 +1,8 @@
 //! Create an osquery distributed plugin.
 //!
 //! See <https://osquery.readthedocs.io/en/latest/development/distributed-plugins/> for more.
-use crate::{osquery, OsqueryPlugin, RegistryName, Result};
-use serde::{de, Deserialize, Deserializer, Serialize};
+use crate::{OsqueryPlugin, RegistryName, Result, osquery};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use std::{collections::BTreeMap, result};
 
@@ -189,7 +189,7 @@ impl TryFrom<QueriesResponse> for Vec<QueryResponse> {
                 // Empty string results or missing query results are treated as empty rows
                 Some(Value::String(_)) | None => vec![],
                 Some(other) => {
-                    return Err(format!("results for \"{query_name}\" unknown type {other}"))
+                    return Err(format!("results for \"{query_name}\" unknown type {other}"));
                 }
             };
 

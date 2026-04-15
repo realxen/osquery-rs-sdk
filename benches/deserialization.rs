@@ -27,8 +27,7 @@ use osquery_rs_sdk::{ConstraintList, QueryContext};
 const CTX_EMPTY: &str = r"{}";
 
 /// Single column, empty constraint list (stringy empty string from osquery < v3).
-const CTX_SINGLE_EMPTY: &str =
-    r#"{"constraints":[{"name":"domain","list":"","affinity":"TEXT"}]}"#;
+const CTX_SINGLE_EMPTY: &str = r#"{"constraints":[{"name":"domain","list":"","affinity":"TEXT"}]}"#;
 
 /// Two columns, one with a constraint, one empty (osquery < v3, stringy ops).
 const CTX_TWO_COL_STRINGY: &str = r#"{"constraints":[{"name":"domain","list":[{"op":"2","expr":"osquery_rs.co"}],"affinity":"TEXT"},{"name":"email","list":"","affinity":"TEXT"}]}"#;

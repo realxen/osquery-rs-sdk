@@ -5,9 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 use thrift::{
+    Result as TResult,
     protocol::{TBinaryInputProtocol, TBinaryOutputProtocol, TInputProtocol, TOutputProtocol},
     transport::{TBufferedReadTransport, TBufferedWriteTransport},
-    Result as TResult,
 };
 
 #[cfg(unix)]
