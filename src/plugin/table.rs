@@ -1,7 +1,7 @@
 //! Create an osquery table plugin.
 
-use crate::{osquery, OsqueryPlugin, RegistryName, Result};
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use crate::{OsqueryPlugin, RegistryName, Result, osquery};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt, result};
 
@@ -1916,10 +1916,11 @@ mod tests {
 
         let row = &resp.response.unwrap()[0];
         assert_eq!(row.get("status").unwrap(), "failure");
-        assert!(row
-            .get("message")
-            .unwrap()
-            .contains("missing json_value_array"));
+        assert!(
+            row.get("message")
+                .unwrap()
+                .contains("missing json_value_array")
+        );
     }
 
     #[test]
@@ -1933,10 +1934,11 @@ mod tests {
 
         let row = &resp.response.unwrap()[0];
         assert_eq!(row.get("status").unwrap(), "failure");
-        assert!(row
-            .get("message")
-            .unwrap()
-            .contains("invalid json_value_array"));
+        assert!(
+            row.get("message")
+                .unwrap()
+                .contains("invalid json_value_array")
+        );
     }
 
     #[test]
