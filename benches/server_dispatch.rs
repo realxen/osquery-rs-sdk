@@ -20,9 +20,10 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use osquery_rs_sdk::mock::MockExtensionManager;
 use osquery_rs_sdk::{
     ColumnDefinition, ExtensionManagerClient, ExtensionManagerServer, TablePlugin,
@@ -125,5 +126,71 @@ fn bench_ping_throughput(c: &mut Criterion) {
     handle.join().ok();
 }
 
-criterion_group!(benches, bench_ping_roundtrip, bench_ping_throughput);
+/// Benchmark: concurrent ping throughput with N parallel clients.
+///
+/// Each iteration spawns `n_clients` threads, each performing 100 pings.
+/// Measures aggregate throughput and contention characteristics.
+fn bench_concurrent_ping(c: &mut Criterion) {
+    let (handle, listen_socket) = start_server("conc_ping");
+
+    // Verify connectivity
+    {
+        let mut probe = ExtensionManagerClient::connect_with_path(&listen_socket)
+            .expect("probe should connect");
+        probe.ping().expect("probe ping should succeed");
+        probe.close();
+    }
+
+    let mut group = c.benchmark_group("concurrent_ping");
+
+    for n_clients in [1, 2, 4, 8, 16] {
+        let pings_per_client: u64 = 100;
+        let total_pings = n_clients as u64 * pings_per_client;
+        group.throughput(criterion::Throughput::Elements(total_pings));
+
+        group.bench_with_input(
+            BenchmarkId::new("clients", n_clients),
+            &n_clients,
+            |b, &n| {
+                b.iter(|| {
+                    let barrier = Arc::new(Barrier::new(n + 1));
+                    let mut handles = Vec::with_capacity(n);
+
+                    for _ in 0..n {
+                        let sock = listen_socket.clone();
+                        let bar = barrier.clone();
+                        handles.push(std::thread::spawn(move || {
+                            let mut client =
+                                ExtensionManagerClient::connect_with_path(&sock).unwrap();
+                            bar.wait(); // synchronize start
+                            for _ in 0..pings_per_client {
+                                let _ = black_box(client.ping());
+                            }
+                            client.close();
+                        }));
+                    }
+
+                    barrier.wait(); // release all clients simultaneously
+                    for h in handles {
+                        h.join().unwrap();
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+
+    // Shutdown
+    let mut client = ExtensionManagerClient::connect_with_path(&listen_socket)
+        .expect("shutdown client should connect");
+    client.shutdown().ok();
+    handle.join().ok();
+}
+
+criterion_group!(
+    benches,
+    bench_ping_roundtrip,
+    bench_ping_throughput,
+    bench_concurrent_ping
+);
 criterion_main!(benches);
