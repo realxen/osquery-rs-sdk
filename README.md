@@ -5,7 +5,7 @@
 [![CI][ci-image]][ci-link]
 [![MIT Licensed][license-image]][license-link]
 
-A Rust SDK for building [osquery](https://osquery.io) extensions. Create custom tables, loggers, config providers, and distributed query handlers as native Rust binaries that plug into `osqueryd` or `osqueryi`.
+A feature-complete Rust SDK for building [osquery](https://osquery.io) extensions -- custom tables (read-only and writable), loggers, config providers, and distributed query handlers as native binaries that plug into `osqueryd` or `osqueryi`.
 
 ## Features
 
