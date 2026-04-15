@@ -365,27 +365,30 @@ impl ExtensionManagerServer {
             .lock()
             .map_err(|_| "osquery client lock poisoned")?;
 
-        // Deregister the extension if we have a client and uuid
+        // Nothing to do if we never registered
+        let Some(uuid) = self.uuid.take() else {
+            return Ok(());
+        };
+
+        // Deregister the extension if we have a client
         if let Some(client) = client_guard.as_mut() {
-            if let Some(uuid) = self.uuid {
-                match client.deregister_extension(uuid) {
-                    Err(err) => {
-                        // Log but don't fail -- we still want to stop the server
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!("error deregistering extension {}: {}", uuid, err);
-                        #[cfg(not(feature = "tracing"))]
-                        let _ = err;
-                    }
-                    Ok(res) if res.code.unwrap_or_default() != 0 => {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(
-                            "status {} deregistering extension: {}",
-                            res.code.unwrap_or_default(),
-                            res.message.as_deref().unwrap_or_default()
-                        );
-                    }
-                    Ok(_) => {}
+            match client.deregister_extension(uuid) {
+                Err(err) => {
+                    // Log but don't fail -- we still want to stop the server
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("error deregistering extension {}: {}", uuid, err);
+                    #[cfg(not(feature = "tracing"))]
+                    let _ = err;
                 }
+                Ok(res) if res.code.unwrap_or_default() != 0 => {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!(
+                        "status {} deregistering extension: {}",
+                        res.code.unwrap_or_default(),
+                        res.message.as_deref().unwrap_or_default()
+                    );
+                }
+                Ok(_) => {}
             }
         }
 
@@ -547,6 +550,7 @@ mod tests {
 
     use super::*;
     use crate::osquery::ExtensionSyncHandler;
+    use crate::plugin::table::{ColumnDefinition, TablePlugin};
     use crate::server::mock;
     use crate::server::RegistryName;
     use serial_test::serial;
@@ -621,14 +625,21 @@ mod tests {
     #[ignore = "requires a running osqueryd extension socket"]
     #[serial]
     fn register_extension() {
-        let name = "test_plugin";
-        let plugin = mock::MockPlugin::new(name, RegistryName::Table);
+        let plugin = TablePlugin::new(
+            "test_register_ext",
+            vec![ColumnDefinition::text("col1")],
+            |_ctx| Ok(vec![]),
+        );
         let mut server = init_server();
 
         server.register_plugin(plugin).unwrap();
         let uuid = server.register_extension();
 
-        assert!(uuid.is_ok(), "extension plugin should be in registry");
+        assert!(
+            uuid.is_ok(),
+            "extension plugin should be in registry: {:?}",
+            uuid.err()
+        );
         assert!(
             server.uuid.is_some(),
             "uuid should be set by register_extension"
